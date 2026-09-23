@@ -2,6 +2,7 @@ import "server-only";
 import { supabase } from "@/lib/supabase";
 import { listAllocationCategories, getUnitCostByProduct, updateProduct } from "@/lib/products/catalog";
 import { saveTikTokSpend } from "@/lib/tiktok-spend";
+import { reapplyCampaignAllocations } from "@/lib/sync/campaign-allocations";
 
 // The only changes AI MIRAJ may make to the dashboard, applied when the owner
 // answers a nightly message (POST /api/agent/apply). Each one is the same edit
@@ -42,6 +43,10 @@ async function setTikTokSpend(date: string, amount: number): Promise<string> {
   }
 
   await saveTikTokSpend(date, amount > 0 ? [{ amount, modelGroupId: null }] : []);
+  // The new row carries no allocation until the next Meta sync stamps the
+  // standing "TikTok General is general" rule on it - until then Analysis by
+  // Product leaves it out, and the re-check that follows would see a gap.
+  await reapplyCampaignAllocations();
   return amount > 0 ? `TikTok spend for ${date} recorded: ${amount} EGP (General)` : `TikTok spend for ${date} recorded as none`;
 }
 
