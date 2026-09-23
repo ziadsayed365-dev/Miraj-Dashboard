@@ -110,7 +110,8 @@ async function pdf(day = yesterdayInEgypt()) {
   trustSandboxCa();
   const { chromium } = await import("playwright");
   const token = await login();
-  const url = `${base()}/print/income-statement?from=${day}&to=${day}&is=1&product=1`;
+  // level=category: the owner wants Analysis by Product at category level.
+  const url = `${base()}/print/income-statement?from=${day}&to=${day}&is=1&product=1&level=category`;
 
   const browser = await chromium.launch();
   try {
