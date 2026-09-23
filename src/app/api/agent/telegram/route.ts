@@ -22,9 +22,18 @@ type TelegramUpdate = {
 };
 
 function config() {
-  const token = process.env.TELEGRAM_BOT_TOKEN;
-  const chatId = process.env.TELEGRAM_CHAT_ID;
+  // Trimmed: a value pasted into Vercel can carry a stray space or line break,
+  // which Telegram rejects.
+  const token = process.env.TELEGRAM_BOT_TOKEN?.trim();
+  const chatId = process.env.TELEGRAM_CHAT_ID?.trim();
   return token && chatId ? { token, chatId } : null;
+}
+
+// Telegram says why it refused (e.g. "chat not found" when the owner never
+// pressed Start on the bot) - pass that on rather than a bare status code.
+async function telegramError(res: Response, call: string): Promise<string> {
+  const body = await res.json().catch(() => null);
+  return `${call} failed (HTTP ${res.status})${body?.description ? `: ${body.description}` : ""}`;
 }
 
 // Splits on line breaks where it can, so a list item is never broken in two.
@@ -70,7 +79,7 @@ export async function POST(request: NextRequest) {
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ chat_id: cfg.chatId, text: chunk }),
         });
-        if (!res.ok) throw new Error(`sendMessage failed (HTTP ${res.status})`);
+        if (!res.ok) throw new Error(await telegramError(res, "sendMessage"));
       }
     }
     if (hasPdf) {
@@ -83,7 +92,7 @@ export async function POST(request: NextRequest) {
         typeof filename === "string" && filename ? filename : "izar-report.pdf"
       );
       const res = await fetch(`${API}/bot${cfg.token}/sendDocument`, { method: "POST", body: form });
-      if (!res.ok) throw new Error(`sendDocument failed (HTTP ${res.status})`);
+      if (!res.ok) throw new Error(await telegramError(res, "sendDocument"));
     }
     return NextResponse.json({ ok: true });
   } catch (err) {
