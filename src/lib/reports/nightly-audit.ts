@@ -63,8 +63,12 @@ function tieLine(incomeStatement: number, byProduct: number): TieLine {
 }
 
 async function getTikTok(day: string): Promise<{ missingDays: string[]; spend: number }> {
+  // From the earlier of the two, so the day's own spend is read even when it
+  // is before AUDIT_SINCE (a re-run for an older day); only missing days are
+  // limited to AUDIT_SINCE.
+  const from = day < AUDIT_SINCE ? day : AUDIT_SINCE;
   const rows = await fetchAllRows<{ date: string; spend: number }>(supabase, "ad_spend", "id, date, spend", (q) =>
-    q.eq("source", "tiktok").gte("date", AUDIT_SINCE).lte("date", day)
+    q.eq("source", "tiktok").gte("date", from).lte("date", day)
   );
   const have = new Set(rows.map((r) => r.date));
   const missingDays: string[] = [];
