@@ -1,0 +1,12 @@
+-- ad_spend rows carry the traffic source they came from ('meta' | 'tiktok') so
+-- the P&L can split the ad-spend line into a Meta line and a TikTok line
+-- (src/lib/reports/daily-pnl.ts) and the TikTok manual-entry flow can find its
+-- own rows (src/lib/tiktok-spend.ts). The Meta sync writes 'meta'; the TikTok
+-- entry writes 'tiktok'. Legacy/backfilled rows default to 'meta'.
+--
+-- This column existed in izar's production DB as untracked schema drift (no
+-- migration file), so the Laundor clone - built from migrations 0001..0032 -
+-- never received it, even though the ported code selects it. Its absence made
+-- every ad-spend read throw "column ad_spend.source does not exist", 500-ing the
+-- dashboard, /bosta and /products.
+alter table ad_spend add column if not exists source text not null default 'meta';

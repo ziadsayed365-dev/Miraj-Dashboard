@@ -1,0 +1,9 @@
+{
+  "name": "ai-miraj",
+  "private": true,
+  "type": "module",
+  "description": "AI MIRAJ's nightly tools: sync, audit, TikTok spend, PDF and Telegram report for the Miraj dashboard.",
+  "dependencies": {
+    "playwright": "1.56.1"
+  }
+}
