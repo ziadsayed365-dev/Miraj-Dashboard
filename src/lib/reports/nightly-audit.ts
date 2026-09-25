@@ -102,11 +102,10 @@ async function getMissingCostProducts(day: string): Promise<MissingCostProduct[]
 // not as expected-delivered: Analysis by Product scales each product by its own
 // delivery rate while the Income Statement scales by the store-wide one, so
 // their expected figures differ by design. What must agree is that both count
-// the same sales. Only in Actual mode, though: in Performance the Income
-// Statement's all-orders figure keeps cancelled orders at full value while
-// Analysis by Product zeroes them, so the two differ by exactly the day's
-// cancelled orders (checked on 15 and 21 Sep 2026). Ad spend is the same in
-// both modes, so Actual covers it too.
+// the same sales. Checked in Performance, the mode the nightly PDF prints:
+// Actual counts only orders handed to the courier, so the day just reported has
+// almost none, and Analysis by Product then has no sold product to spread
+// General ad spend over - a gap that is not in the PDF the owner reads.
 async function tieCheck(day: string, mode: "performance" | "actual"): Promise<TieCheck> {
   const pnl = await getDailyPnl(day, day, mode);
   const row = pnl.rows.find((r) => r.date === day);
@@ -123,12 +122,12 @@ async function tieCheck(day: string, mode: "performance" | "actual"): Promise<Ti
 }
 
 export async function runNightlyAudit(day: string): Promise<NightlyAudit> {
-  const [tiktok, allUnallocated, missingCostProducts, actual, comparison, allocationCategories] =
+  const [tiktok, allUnallocated, missingCostProducts, performance, comparison, allocationCategories] =
     await Promise.all([
       getTikTok(day),
       getUnmappedAds(),
       getMissingCostProducts(day),
-      tieCheck(day, "actual"),
+      tieCheck(day, "performance"),
       getDayComparison(day),
       listAllocationCategories(),
     ]);
@@ -138,7 +137,7 @@ export async function runNightlyAudit(day: string): Promise<NightlyAudit> {
   const unallocatedCampaigns = allUnallocated.filter(
     (ad) => ad.date >= AUDIT_SINCE && !ad.campaignId.startsWith("tiktok:")
   );
-  const ties = [actual];
+  const ties = [performance];
   const tiesOk = ties.every((t) => t.revenue.ok && t.cogs.ok && t.adSpend.ok);
 
   return {
