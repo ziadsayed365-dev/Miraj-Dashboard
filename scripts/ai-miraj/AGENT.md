@@ -45,7 +45,7 @@ If the send fails, retry at most twice, then say so in your closing summary.
 He often answers within minutes, so do not end the run once the message is sent. Run `node miraj.mjs wait` (give it a 600000 ms timeout) again and again:
 - `no replies yet` - run it again.
 - `reply window closed` - it is 1:00 AM Cairo; stop and write your closing summary. The hourly replies run takes over from 1:10 AM.
-- Anything else is his replies (also in `out/replies.json`), and each is handed over only once, so act on them now: follow `REPLIES.md` from step 2 ("See what is outstanding") to the end, with its rules, and send what it says to send. Then go back to waiting.
+- Anything else is his replies (also in `out/replies.json`), and each is handed over only once, so act on them now: if he asks you to redo the run, follow "Redo on request" in `REPLIES.md`; for anything else, follow `REPLIES.md` from step 2 ("See what is outstanding") to the end. Keep to its rules and send what it says to send. Then go back to waiting.
 
 The report above is the night's one report; messages sent here only answer his replies.
 

@@ -24,6 +24,14 @@ fs.mkdirSync(OUT, { recursive: true });
 // Mirrors src/app/(app)/sync-button.tsx.
 const SYNC_STEPS = ["shopify", "shopify-products", "meta", "tiktok", "calibrate", "monthly-rate", "sku-monthly-rate", "margins"];
 
+// Steps that checkpoint a cursor and stop after ~40s, so one request clears only
+// part of the backlog: they must be called until they answer reachedEnd, as the
+// Sync button does. Pressing each once reported 27 Sep with every order after
+// 8:51 PM missing (130 orders instead of ~200), since Shopify orders are walked
+// oldest-update first and the newest land last. The caps are higher than the
+// button's because nobody is here to click Sync again.
+const MAX_PASSES = { shopify: 25, meta: 5, tiktok: 5 };
+
 function env(name) {
   const value = process.env[name];
   if (!value) throw new Error(`Missing env ${name}`);
@@ -51,18 +59,33 @@ async function syncStep(step) {
 
 async function sync() {
   const results = [];
+  const fail = (step) => {
+    fs.writeFileSync(path.join(OUT, "sync.json"), JSON.stringify({ ok: false, failedStep: step, results }, null, 2));
+    process.exit(1);
+  };
   for (const step of SYNC_STEPS) {
-    let attempt = await syncStep(step);
-    for (let i = 2; !attempt.ok && i <= STEP_ATTEMPTS; i++) {
-      console.log(`${step}: failed (${attempt.error}), trying again`);
-      attempt = await syncStep(step);
+    const maxPasses = MAX_PASSES[step] ?? 1;
+    let drained = false;
+    for (let pass = 1; pass <= maxPasses && !drained; pass++) {
+      let attempt = await syncStep(step);
+      for (let i = 2; !attempt.ok && i <= STEP_ATTEMPTS; i++) {
+        console.log(`${step}: failed (${attempt.error}), trying again`);
+        attempt = await syncStep(step);
+      }
+      const { ok, data } = attempt;
+      results.push(data);
+      if (!ok) {
+        console.log(`${step}: FAILED - ${attempt.error}`);
+        fail(step);
+      }
+      drained = maxPasses === 1 || data.reachedEnd === true;
+      console.log(`${step}${maxPasses > 1 ? ` pass ${pass}` : ""}: ok${drained ? "" : " (more to fetch)"}`);
     }
-    const { ok, data } = attempt;
-    results.push(data);
-    console.log(`${step}: ${ok ? "ok" : `FAILED - ${attempt.error}`}`);
-    if (!ok) {
-      fs.writeFileSync(path.join(OUT, "sync.json"), JSON.stringify({ ok: false, failedStep: step, results }, null, 2));
-      process.exit(1);
+    // A half-finished pull is not a sync: the report would be short of the
+    // day's latest orders or spend, so stop here rather than audit it.
+    if (!drained) {
+      console.log(`${step}: FAILED - still not caught up after ${maxPasses} passes`);
+      fail(step);
     }
   }
   fs.writeFileSync(path.join(OUT, "sync.json"), JSON.stringify({ ok: true, results }, null, 2));

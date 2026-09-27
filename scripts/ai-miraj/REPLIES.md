@@ -10,7 +10,7 @@ command -v certutil >/dev/null || (apt-get update -qq && apt-get install -y -qq 
 
 ## Steps
 
-1. **Read his replies** - `node miraj.mjs replies` (also written to `out/replies.json`). Each message is handed over once, so treat what you get as the whole conversation. If the list is empty, stop here: send nothing, and end with "no replies".
+1. **Read his replies** - `node miraj.mjs replies` (also written to `out/replies.json`). Each message is handed over once, so treat what you get as the whole conversation. If the list is empty, stop here: send nothing, and end with "no replies". If he asks you to redo the run, follow "Redo on request" below first, then carry on here with anything else he said.
 2. **See what is outstanding** - `node miraj.mjs audit`: the TikTok days still missing (`tiktokMissingDays`), the campaigns still unallocated and the products still without a cost, with their ids, plus every category and sub-category (`allocationCategories`).
 3. **Turn his words into actions.** Write `out/actions.json` as `{"actions": [...]}`, using only these:
    - `{"type": "set_tiktok_spend", "date": "<YYYY-MM-DD from tiktokMissingDays>", "amount": <number, 0 for none>}` - recorded as General (all products), exactly like the dashboard popup.
@@ -25,6 +25,12 @@ node miraj.mjs tg out/body.txt out/miraj-<day>.pdf
 ```
 
    The body starts with the line `AI MIRAJ: <day> report - recorded and rechecked`, says what you changed (e.g. "TikTok 22 Sep: 3,500 EGP"), then the same short analysis as the nightly report (AGENT.md, "The short analysis"), written from the fresh audit's `comparison`. If something is still outstanding, send the same message without the PDF, listing only what is left.
+
+## Redo on request
+
+When he asks you to run it again - "try again", "redo", "sync again", "resend the report", "the numbers are wrong", "the sync didn't run" or the like - do the whole nightly run once more, exactly as AGENT.md steps 1-5 describe: sync, audit, decide, then send either the action-needed message or the report with its PDF. Use the day he names (pass it to `audit` and `pdf`, e.g. `node miraj.mjs audit 2026-09-27`); if he names none, use yesterday. This is the one time a second report for the same day is right: he asked for it.
+
+Start the title with `AI MIRAJ: <day> report - redone` (or `AI MIRAJ: action needed - <day> (redone)`). If the numbers differ from the ones he got before, say so in one line, e.g. "Orders are 187, not 130 as first sent - last night's sync had stopped part way." If the sync fails again, send `AI MIRAJ: sync failed (<step>)` with the error, as AGENT.md says; do not send a report built on a half-finished sync.
 
 ## Rules
 - **Never guess.** If a reply is unclear, a number could belong to more than one day or item, or it names a category that does not exist, change nothing: send him a short message asking exactly what you need, and list the options. A wrong number in the books is far worse than waiting an hour.
