@@ -14,7 +14,7 @@ The cloud sandbox already has Chromium in /opt/pw-browsers, matched by the pinne
 
 ## Steps
 
-1. **Sync** - `node miraj.mjs sync`. If a step fails, stop and send: `AI MIRAJ: sync failed (<step>)`, with the error and "open the dashboard and press Sync, or tell Claude".
+1. **Sync** - `node miraj.mjs sync` (give it a 600000 ms timeout: it keeps pulling until every order is in). If a step fails, stop and send: `AI MIRAJ: sync failed (<step>)`, with the error and "open the dashboard and press Sync, or tell Claude".
 2. **Audit** - `node miraj.mjs audit`. Read `out/audit.json`. "day" is yesterday (Egypt time), the day being reported.
 3. **Decide**
    - Problems are exactly:
