@@ -91,9 +91,32 @@ async function sync() {
   fs.writeFileSync(path.join(OUT, "sync.json"), JSON.stringify({ ok: true, results }, null, 2));
 }
 
+// Right after Sync the dashboard is busy recomputing, and a read can time out
+// (an error page from Vercel or the sandbox's proxy) and pass a minute later.
+// Reads change nothing, so trying again is safe.
+const READ_ATTEMPTS = 3;
+const RETRY_PAUSE_MS = 20_000;
+const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function withRetries(label, fn) {
+  for (let i = 1; ; i++) {
+    try {
+      return await fn();
+    } catch (err) {
+      if (i >= READ_ATTEMPTS) throw err;
+      console.log(`${label}: failed (${err instanceof Error ? err.message.split("\n")[0] : err}), trying again`);
+      await pause(RETRY_PAUSE_MS);
+    }
+  }
+}
+
 async function audit(day = yesterdayInEgypt()) {
-  const res = await fetch(`${base()}/api/agent/audit?day=${day}`, { headers: cronHeaders() });
-  const data = await res.json();
+  const { res, data } = await withRetries("audit", async () => {
+    const res = await fetch(`${base()}/api/agent/audit?day=${day}`, { headers: cronHeaders() });
+    const data = await res.json().catch(() => null);
+    if (!data || res.status >= 500) throw new Error(`HTTP ${res.status}`);
+    return { res, data };
+  });
   fs.writeFileSync(path.join(OUT, "audit.json"), JSON.stringify(data, null, 2));
   console.log(JSON.stringify(data, null, 2));
   if (!res.ok) process.exit(1);
@@ -137,6 +160,12 @@ async function pdf(day = yesterdayInEgypt()) {
   // level=category: the owner wants Analysis by Product at category level.
   const url = `${base()}/print/income-statement?from=${day}&to=${day}&is=1&product=1&level=category`;
 
+  const file = path.join(OUT, `miraj-${day}.pdf`);
+  await withRetries("pdf", () => renderPdf(chromium, token, url, file));
+  console.log(file);
+}
+
+async function renderPdf(chromium, token, url, file) {
   const browser = await chromium.launch();
   try {
     const context = await browser.newContext();
@@ -145,8 +174,20 @@ async function pdf(day = yesterdayInEgypt()) {
     await page.addInitScript(() => {
       window.print = () => {}; // the page auto-opens the print dialog; we save the PDF ourselves
     });
-    await page.goto(url, { waitUntil: "networkidle" });
+    // The page is rendered on the server from the whole P&L history, which can
+    // take well over 30s right after Sync. When it takes too long, Chromium is
+    // handed an error page instead ("upstream request failed" from the sandbox's
+    // proxy) and printing it sent the owner a blank PDF on 28 Sep. So check the
+    // answer, and wait for the report itself rather than for the network to go
+    // quiet.
+    const response = await page.goto(url, { waitUntil: "load", timeout: 180_000 });
     if (new URL(page.url()).pathname === "/login") throw new Error("PDF page redirected to login");
+    if (response && !response.ok()) {
+      const body = (await page.innerText("body").catch(() => "")).trim().split("\n")[0].slice(0, 120);
+      throw new Error(`report page answered HTTP ${response.status()}${body ? ` (${body})` : ""}`);
+    }
+    await page.waitForSelector("[data-pdf-page]", { timeout: 60_000 });
+    await page.waitForLoadState("networkidle", { timeout: 15_000 }).catch(() => {});
     // One page per section - Income Statement, then Analysis by Product. Lay
     // the page out at A4's printed width (190mm inside the page's 10mm margins,
     // 718px) and shrink any section taller than a page (277mm, 1047px, less
@@ -160,9 +201,7 @@ async function pdf(day = yesterdayInEgypt()) {
         if (height > maxHeight) el.style.zoom = String(maxHeight / height);
       }
     }, 1047 - 100);
-    const file = path.join(OUT, `miraj-${day}.pdf`);
     await page.pdf({ path: file, format: "A4", printBackground: true, preferCSSPageSize: true });
-    console.log(file);
   } finally {
     await browser.close();
   }
