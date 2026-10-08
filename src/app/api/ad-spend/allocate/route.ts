@@ -127,6 +127,10 @@ export async function DELETE(request: NextRequest) {
       .eq("campaign_id", campaignId);
     if (updateErr) throw new Error(`Failed to clear spend allocation: ${updateErr.message}`);
 
+    // Same as POST: the reports read these rows through the cache, so without
+    // this the old allocation keeps showing on past days until it expires.
+    revalidateTag(REPORT_CACHE_TAG, { expire: 0 });
+
     return NextResponse.json({ ok: true });
   } catch (err) {
     return NextResponse.json({ ok: false, error: err instanceof Error ? err.message : "unknown error" }, { status: 500 });
