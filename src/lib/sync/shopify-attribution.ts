@@ -37,6 +37,8 @@ const LOOKBACK_DAYS = 3;
 // Meta's own default click window.
 const AD_CLICK_WINDOW_DAYS = 7;
 const UPDATE_CONCURRENCY = 10;
+// meta_campaign_id of a Meta click whose campaign can't be told (see resolveCampaigns).
+export const UNKNOWN_META_CAMPAIGN = "unknown";
 const LOOKUP_CONCURRENCY = 5;
 const META_GRAPH = "https://graph.facebook.com/v21.0";
 
@@ -166,7 +168,7 @@ export async function syncShopifyAttribution(opts: { from?: string; to?: string 
         }
         const click = journey ? lastAdClick(node.createdAt, journey) : null;
         const utm = click ?? journey?.lastVisit?.utmParameters ?? null;
-        const meta = click && isMetaVisit(click);
+        const meta = Boolean(click && isMetaVisit(click));
         const campaign = clean(utm?.campaign);
         const term = clean(utm?.term);
         found.set(node.id.split("/").pop()!, {
@@ -175,7 +177,8 @@ export async function syncShopifyAttribution(opts: { from?: string; to?: string 
           utm_campaign: campaign,
           utm_content: clean(utm?.content),
           utm_term: term,
-          meta_campaign_id: meta && campaign && META_ID.test(campaign) ? campaign : null,
+          // Meta clicks only; resolveCampaigns fills the ones without a campaign id.
+          meta_campaign_id: meta ? (campaign && META_ID.test(campaign) ? campaign : UNKNOWN_META_CAMPAIGN) : null,
           meta_adset_id: meta && term && META_ID.test(term) ? term : null,
         });
       }
@@ -251,11 +254,11 @@ function lastAdClick(orderCreatedAt: string, journey: NonNullable<JourneyNode["c
 // Fills meta_campaign_id for Meta clicks tagged with an ad set id but a label
 // (not an id) in utm_campaign. An ad set never moves campaign, so an answer
 // already stored on another order is reused; the rest are asked from Meta.
-// One the token can't see (deleted, another account) stays null, and the order
-// shows under "Meta ad, campaign unknown" - as does a Meta click tagged with
-// labels only, no ids.
+// One the token can't see (deleted, another account) stays UNKNOWN_META_CAMPAIGN,
+// and the order shows under "Meta ad, campaign unknown" - as does a Meta click
+// tagged with labels only, no ids.
 async function resolveCampaigns(rows: AttributionRow[]): Promise<void> {
-  const pending = rows.filter((r) => r.meta_campaign_id === null && r.meta_adset_id !== null);
+  const pending = rows.filter((r) => r.meta_campaign_id === UNKNOWN_META_CAMPAIGN && r.meta_adset_id !== null);
   if (pending.length === 0) return;
   const adsets = [...new Set(pending.map((r) => r.meta_adset_id!))];
 
@@ -266,6 +269,7 @@ async function resolveCampaigns(rows: AttributionRow[]): Promise<void> {
       .select("meta_adset_id, meta_campaign_id")
       .in("meta_adset_id", batch)
       .not("meta_campaign_id", "is", null)
+      .neq("meta_campaign_id", UNKNOWN_META_CAMPAIGN)
       .limit(1000);
     if (error) throw new Error(`Failed to read known ad sets: ${error.message}`);
     for (const row of data ?? []) campaignOf.set(row.meta_adset_id, row.meta_campaign_id);
@@ -274,7 +278,7 @@ async function resolveCampaigns(rows: AttributionRow[]): Promise<void> {
   const unknown = adsets.filter((id) => !campaignOf.has(id));
   for (const [id, campaign] of await fetchCampaignIds(unknown)) campaignOf.set(id, campaign);
 
-  for (const r of pending) r.meta_campaign_id = campaignOf.get(r.meta_adset_id!) ?? null;
+  for (const r of pending) r.meta_campaign_id = campaignOf.get(r.meta_adset_id!) ?? UNKNOWN_META_CAMPAIGN;
 }
 
 // Ad set id -> campaign id, from Meta - one request per ad set (Graph no longer

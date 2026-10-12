@@ -4,6 +4,7 @@ import { REPORT_CACHE_SECONDS, REPORT_CACHE_TAG } from "./cache";
 import { supabase } from "@/lib/supabase";
 import { fetchAllRows } from "@/lib/fetch-all";
 import { inBatches } from "@/lib/in-batches";
+import { UNKNOWN_META_CAMPAIGN } from "@/lib/sync/shopify-attribution";
 import { addDays, egyptToday } from "@/lib/dates";
 import { getSkuProjectionRates } from "@/lib/engine/monthly-rate";
 import { REPORTED_AD_SEGMENT } from "@/lib/ad-segment";
@@ -69,7 +70,7 @@ export type CampaignPnlResult = {
 
 // A Meta ad click whose campaign isn't known: tagged with labels only, or its ad set
 // is one the token can't read.
-const UNKNOWN_CAMPAIGN = "unknown";
+const UNKNOWN_CAMPAIGN = UNKNOWN_META_CAMPAIGN;
 
 export const getCampaignPnl = unstable_cache(computeCampaignPnl, ["campaign-pnl"], {
   revalidate: REPORT_CACHE_SECONDS,
@@ -86,7 +87,7 @@ async function computeCampaignPnl(from: string, to: string): Promise<CampaignPnl
     fetchAllRows<{
       order_number: string;
       cancelled_at: string | null;
-      meta_campaign_id: string | null;
+      meta_campaign_id: string;
       meta_adset_id: string | null;
       order_line_items: {
         product_id: number | null;
@@ -104,7 +105,7 @@ async function computeCampaignPnl(from: string, to: string): Promise<CampaignPnl
         query
           .gte("egypt_day", from)
           .lte("egypt_day", effTo)
-          .or("meta_campaign_id.not.is.null,meta_adset_id.not.is.null")
+          .not("meta_campaign_id", "is", null)
     ),
     fetchAllRows<{ campaign_id: string | null; campaign_name: string | null; spend: number; date: string }>(
       supabase,
@@ -194,7 +195,7 @@ async function computeCampaignPnl(from: string, to: string): Promise<CampaignPnl
   for (const order of orders) {
     // A campaign split by ad set is reported per ad set, like its spend.
     const key =
-      order.meta_campaign_id === null
+      order.meta_campaign_id === UNKNOWN_CAMPAIGN
         ? UNKNOWN_CAMPAIGN
         : ADSET_LEVEL_CAMPAIGNS.has(order.meta_campaign_id) && order.meta_adset_id
           ? order.meta_adset_id
