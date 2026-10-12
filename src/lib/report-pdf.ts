@@ -24,17 +24,20 @@ const A4_CONTENT_HEIGHT_PX = 1047;
 const SECTION_ALLOWANCE_PX = 100;
 
 // The serverless Chromium ships only Open Sans, which has no Arabic - and
-// Miraj's product names are Arabic. Its fontconfig also reads /tmp/fonts, so
-// the bundled Noto Sans Arabic is put there before launch and Chromium falls
-// back to it for every Arabic glyph.
+// Miraj's product names are Arabic. Its fontconfig reads /tmp/fonts, so the
+// bundled Noto Sans Arabic is added there and Chromium falls back to it for
+// every Arabic glyph.
+//
+// Only AFTER the package has unpacked its own fonts into /tmp/fonts: it skips
+// unpacking when that folder already exists, so creating it first left
+// Chromium with no fonts and no fonts.conf at all - and every PDF came out
+// with its tables but not a single word (13 Oct).
+const FONT_DIR = "/tmp/fonts";
 const ARABIC_FONT = path.join(process.cwd(), "src/lib/pdf-fonts/NotoSansArabic.ttf");
 
 function installArabicFont(): void {
-  const dir = "/tmp/fonts";
-  const target = path.join(dir, "NotoSansArabic.ttf");
-  if (fs.existsSync(target)) return;
-  fs.mkdirSync(dir, { recursive: true });
-  fs.copyFileSync(ARABIC_FONT, target);
+  const target = path.join(FONT_DIR, "NotoSansArabic.ttf");
+  if (!fs.existsSync(target)) fs.copyFileSync(ARABIC_FONT, target);
 }
 
 async function launch(): Promise<Browser> {
@@ -42,9 +45,15 @@ async function launch(): Promise<Browser> {
   if (localPath) {
     return puppeteer.launch({ executablePath: localPath, headless: true, args: ["--no-sandbox", "--disable-dev-shm-usage"] });
   }
-  installArabicFont();
+  // A font folder left by the old order, without the package's fonts.conf,
+  // would still block the unpacking - clear it first.
+  if (fs.existsSync(FONT_DIR) && !fs.existsSync(path.join(FONT_DIR, "fonts.conf"))) {
+    fs.rmSync(FONT_DIR, { recursive: true, force: true });
+  }
   const chromium = (await import("@sparticuz/chromium")).default;
-  return puppeteer.launch({ executablePath: await chromium.executablePath(), args: chromium.args, headless: true });
+  const executablePath = await chromium.executablePath();
+  installArabicFont();
+  return puppeteer.launch({ executablePath, args: chromium.args, headless: true });
 }
 
 // "2026-10-11" -> "miraj-2026-10-11.pdf", the name the nightly report has always had.
