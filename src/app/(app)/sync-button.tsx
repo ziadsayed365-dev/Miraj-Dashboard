@@ -12,7 +12,7 @@ type Status = "idle" | "loading" | "success" | "incomplete" | "error";
 // which does sync the courier. Inherited from an upstream clone whose courier
 // was not Bosta. Miraj's courier IS Bosta, so a manual sync refreshes orders and
 // ad spend but NOT delivery outcomes -- those land on the next nightly run.
-const STEPS = ["shopify", "shopify-products", "meta", "tiktok", "calibrate", "monthly-rate", "sku-monthly-rate", "margins"];
+const STEPS = ["shopify", "shopify-products", "attribution", "meta", "tiktok", "calibrate", "monthly-rate", "sku-monthly-rate", "margins"];
 
 // Steps that checkpoint a cursor and self-cap on a time budget, so ONE request
 // only clears PART of the backlog. They have to be called until they answer

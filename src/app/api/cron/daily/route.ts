@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { syncShopifyOrders } from "@/lib/sync/shopify-orders";
 import { syncShopifyProducts } from "@/lib/sync/shopify-products";
+import { syncShopifyAttribution } from "@/lib/sync/shopify-attribution";
 import { syncMetaSpend } from "@/lib/sync/meta-spend";
 import { syncTikTokSpend } from "@/lib/sync/tiktok-spend";
 import { syncBostaDeliveries } from "@/lib/sync/bosta-deliveries";
@@ -62,6 +63,8 @@ export async function GET(request: NextRequest) {
   results.shopifyPasses = shopifyPasses;
   results.shopifyCompleted = shopifyCompleted;
   results.products = await syncShopifyProducts();
+  // Which Meta campaign each recent order came from (Campaigns P&L).
+  results.attribution = await syncShopifyAttribution();
   for (let i = 0; i < 3; i++) {
     const r = await syncMetaSpend();
     results.meta = r;

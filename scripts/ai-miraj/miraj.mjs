@@ -22,7 +22,7 @@ const OUT = path.join(path.dirname(fileURLToPath(import.meta.url)), "out");
 fs.mkdirSync(OUT, { recursive: true });
 
 // Mirrors src/app/(app)/sync-button.tsx.
-const SYNC_STEPS = ["shopify", "shopify-products", "meta", "tiktok", "calibrate", "monthly-rate", "sku-monthly-rate", "margins"];
+const SYNC_STEPS = ["shopify", "shopify-products", "attribution", "meta", "tiktok", "calibrate", "monthly-rate", "sku-monthly-rate", "margins"];
 
 // Steps that checkpoint a cursor and stop after ~40s, so one request clears only
 // part of the backlog: they must be called until they answer reachedEnd, as the

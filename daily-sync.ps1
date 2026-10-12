@@ -55,6 +55,7 @@ function Invoke-StepUntilEnd($step, $max) {
 $okAll = $true
 if (-not (Invoke-StepUntilEnd 'shopify' 20)) { $okAll = $false }
 $r = Invoke-Step 'shopify-products'; Log ("shopify-products -> " + ($r | ConvertTo-Json -Compress))
+$r = Invoke-Step 'attribution'; Log ("attribution -> " + ($r | ConvertTo-Json -Compress))
 if (-not (Invoke-StepUntilEnd 'meta' 20)) { $okAll = $false }
 foreach ($s in 'calibrate','monthly-rate','sku-monthly-rate','margins') {
   $r = Invoke-Step $s

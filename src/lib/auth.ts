@@ -8,7 +8,7 @@ const SESSION_DURATION_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 export type Role = "owner" | "staff";
 
 // Pages each role may visit. Owner is unrestricted (checked separately).
-export const STAFF_ALLOWED_PATHS = ["/", "/products", "/expense-analysis", "/bosta", "/print/income-statement"];
+export const STAFF_ALLOWED_PATHS = ["/", "/products", "/campaigns", "/expense-analysis", "/bosta", "/print/income-statement", "/print/campaigns"];
 
 function sign(payload: string, secret: string): string {
   return crypto.createHmac("sha256", secret).update(payload).digest("hex");

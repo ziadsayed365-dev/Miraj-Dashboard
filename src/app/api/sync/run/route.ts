@@ -4,6 +4,7 @@ import { SESSION_COOKIE_NAME, verifySessionToken } from "@/lib/auth";
 import { REPORT_CACHE_TAG } from "@/lib/reports/cache";
 import { syncShopifyOrders } from "@/lib/sync/shopify-orders";
 import { syncShopifyProducts } from "@/lib/sync/shopify-products";
+import { syncShopifyAttribution } from "@/lib/sync/shopify-attribution";
 import { syncMetaSpend } from "@/lib/sync/meta-spend";
 import { syncTikTokSpend } from "@/lib/sync/tiktok-spend";
 import { runCalibration } from "@/lib/engine/calibration";
@@ -26,7 +27,7 @@ export const dynamic = "force-dynamic";
 // NOTE: no "bosta" step, unlike the nightly cron, which syncs the courier too.
 // Inherited from an upstream clone whose courier was not Bosta. Adding "bosta"
 // here would make the manual sync refresh delivery outcomes as well.
-const STEPS = ["shopify", "shopify-products", "meta", "tiktok", "calibrate", "monthly-rate", "sku-monthly-rate", "margins"] as const;
+const STEPS = ["shopify", "shopify-products", "attribution", "meta", "tiktok", "calibrate", "monthly-rate", "sku-monthly-rate", "margins"] as const;
 type Step = (typeof STEPS)[number];
 
 async function runStep(step: Step) {
@@ -35,6 +36,8 @@ async function runStep(step: Step) {
       return syncShopifyOrders();
     case "shopify-products":
       return syncShopifyProducts();
+    case "attribution":
+      return syncShopifyAttribution();
     case "meta":
       return syncMetaSpend();
     case "tiktok":
