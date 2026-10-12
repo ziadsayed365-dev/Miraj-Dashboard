@@ -4,7 +4,9 @@ import { SESSION_COOKIE_NAME, verifySessionToken } from "@/lib/auth";
 import { getDailyPnl } from "@/lib/reports/daily-pnl";
 import { getPerProductReport, type ModelRow } from "@/lib/reports/per-product";
 import { egyptToday, addDays } from "@/lib/dates";
+import { getCampaignPnl } from "@/lib/reports/campaign-pnl";
 import { PrintReport, type ProductDepth } from "./print-report";
+import { CampaignPages } from "./campaign-pages";
 
 export const dynamic = "force-dynamic";
 
@@ -25,7 +27,7 @@ const MAX_COLUMNS = 7;
 export default async function IncomeStatementPrintPage({
   searchParams,
 }: {
-  searchParams: Promise<{ from?: string; to?: string; is?: string; product?: string; level?: string; expand?: string }>;
+  searchParams: Promise<{ from?: string; to?: string; is?: string; product?: string; level?: string; expand?: string; auto?: string; campaigns?: string }>;
 }) {
   const params = await searchParams;
 
@@ -42,6 +44,8 @@ export default async function IncomeStatementPrintPage({
   // shows something.
   let showIncome = params.is === "1";
   const showProduct = params.product === "1";
+  // The Campaigns P&L, as two more pages after the rest.
+  const showCampaigns = params.campaigns === "1";
   // `expand=1` is the old two-state flag this replaced; still honoured so a URL
   // saved before the three-level choice existed keeps printing what it used to.
   const productDepth: ProductDepth =
@@ -50,7 +54,12 @@ export default async function IncomeStatementPrintPage({
       : params.expand === "1"
         ? "item"
         : "sub";
-  if (!showIncome && !showProduct) showIncome = true;
+  if (!showIncome && !showProduct && !showCampaigns) showIncome = true;
+
+  // The Campaigns P&L on its own: just its two pages.
+  if (!showIncome && !showProduct) {
+    return <CampaignPages report={await getCampaignPnl(from, to)} newPage={false} autoPrint={params.auto !== "0"} />;
+  }
 
   // Same source the on-screen Income Statement uses; the columns are exactly the
   // chosen days that have data, capped at the last 7.
@@ -65,17 +74,22 @@ export default async function IncomeStatementPrintPage({
     models = report.models;
   }
 
+  const campaigns = showCampaigns ? await getCampaignPnl(colFrom, to) : null;
+
   return (
-    <PrintReport
-      window={window}
-      rate={pnl.openMonthInfo?.rate ?? null}
-      expectedDeliveryRate={pnl.expectedDeliveryRate}
-      showIncome={showIncome}
-      showProduct={showProduct}
-      productDepth={productDepth}
-      models={models}
-      from={colFrom}
-      to={to}
-    />
+    <>
+      <PrintReport
+        window={window}
+        rate={pnl.openMonthInfo?.rate ?? null}
+        expectedDeliveryRate={pnl.expectedDeliveryRate}
+        showIncome={showIncome}
+        showProduct={showProduct}
+        productDepth={productDepth}
+        models={models}
+        from={colFrom}
+        to={to}
+      />
+      {campaigns && <CampaignPages report={campaigns} newPage autoPrint={false} />}
+    </>
   );
 }
