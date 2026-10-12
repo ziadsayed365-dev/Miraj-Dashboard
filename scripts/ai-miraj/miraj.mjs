@@ -229,11 +229,18 @@ async function tg(bodyFile, attachment) {
 // The dashboard does the asking and the reporting (src/lib/agent/requests.ts):
 // one Telegram message per missing item, and the report with its PDF once
 // nothing is missing. Answers then reach it straight from Telegram.
+// Retried like audit: right after Sync the reports are rebuilt from cold and a
+// heavy query can hit the database's statement timeout (12 Oct). Safe to
+// repeat - nothing already asked is asked again, and the report goes out once.
 async function nightly(day = yesterdayInEgypt()) {
-  const res = await fetch(`${base()}/api/agent/nightly?day=${day}`, { method: "POST", headers: cronHeaders() });
-  const data = await res.json().catch(() => ({}));
+  const data = await withRetries("nightly", async () => {
+    const res = await fetch(`${base()}/api/agent/nightly?day=${day}`, { method: "POST", headers: cronHeaders() });
+    const data = await res.json().catch(() => null);
+    if (!data || res.status >= 500) throw new Error(data?.error ?? `HTTP ${res.status}`);
+    return data;
+  });
   console.log(JSON.stringify(data, null, 2));
-  if (!res.ok || !data.ok) process.exit(1);
+  if (!data.ok) process.exit(1);
 }
 
 async function webhook() {
