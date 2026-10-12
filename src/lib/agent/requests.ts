@@ -33,6 +33,9 @@ type RequestRow = {
   status: "open" | "done";
   message_id: number | null;
   polls: PollEntry[];
+  // A test question (sendTestRequests): answered like a real one, records nothing.
+  test: boolean;
+  label: string | null;
 };
 
 // Telegram's limit on poll options.
@@ -69,10 +72,13 @@ export function parseAmount(text: string): number | null {
 // Opens the request, then sends its question. Opening first means two runs
 // racing over the same item can't both ask: the second insert hits the
 // one-open-request-per-item index and is skipped.
-async function open(kind: Kind, itemKey: string, day: string, send: () => Promise<Partial<RequestRow>>): Promise<boolean> {
+type Asking = { test: boolean; label: string };
+
+async function open(kind: Kind, itemKey: string, day: string, asking: Asking, send: () => Promise<Partial<RequestRow>>): Promise<boolean> {
   const { data, error } = await supabase
     .from("agent_requests")
-    .insert({ kind, item_key: itemKey, day })
+    // A test never shares a key with a real question, so it can't block one.
+    .insert({ kind, item_key: asking.test ? `test:${itemKey}` : itemKey, day, test: asking.test, label: asking.label })
     .select("id")
     .single();
   if (error) {
@@ -89,16 +95,18 @@ async function open(kind: Kind, itemKey: string, day: string, send: () => Promis
   }
 }
 
-async function askTikTok(date: string, day: string) {
-  return open("tiktok", date, day, async () => ({
-    message_id: await sendText(`TikTok spend for ${fmtDay(date)}?\n\nReply to this message with the amount in EGP (0 if there was none).`),
+const testTag = (test: boolean) => (test ? "[TEST - nothing will be saved]\n" : "");
+
+async function askTikTok(date: string, day: string, test = false) {
+  return open("tiktok", date, day, { test, label: `TikTok spend for ${fmtDay(date)}` }, async () => ({
+    message_id: await sendText(`${testTag(test)}TikTok spend for ${fmtDay(date)}?\n\nReply to this message with the amount in EGP (0 if there was none).`),
   }));
 }
 
-async function askCost(p: NightlyAudit["missingCostProducts"][number], day: string) {
-  return open("cost", String(p.productId), day, async () => ({
+async function askCost(p: NightlyAudit["missingCostProducts"][number], day: string, test = false) {
+  return open("cost", String(p.productId), day, { test, label: `the unit cost of ${p.name}` }, async () => ({
     message_id: await sendText(
-      `Cost missing: ${p.name}\n${p.group} - ${p.unitsSold} sold\n\nReply to this message with its unit cost in EGP.`
+      `${testTag(test)}Cost missing: ${p.name}\n${p.group} - ${p.unitsSold} sold\n\nReply to this message with its unit cost in EGP.`
     ),
   }));
 }
@@ -108,13 +116,13 @@ async function allocationPoll(question: string, step: string, options: string[])
   return { pollId, messageId, step, options, answer: null };
 }
 
-async function askAllocation(c: NightlyAudit["unallocatedCampaigns"][number], day: string) {
+async function askAllocation(c: NightlyAudit["unallocatedCampaigns"][number], day: string, test = false) {
   const categories = await listAllocationCategories();
   const groups = categories.flatMap((cat) => cat.groups);
   const question =
-    `Which products is this ad for?\n${c.campaignName ?? c.campaignId}` +
+    `${test ? "[TEST] " : ""}Which products is this ad for?\n${c.campaignName ?? c.campaignId}` +
     `${c.adAccountName ? `\n${c.adAccountName}` : ""}\nLast spend ${egp(c.spend)} on ${fmtDay(c.date)}`;
-  return open("allocation", c.campaignId, day, async () => {
+  return open("allocation", c.campaignId, day, { test, label: c.campaignName ?? c.campaignId }, async () => {
     // Every group fits in one poll: pick them directly. Otherwise category
     // first, then a second poll inside each category that has groups.
     const poll =
@@ -138,11 +146,49 @@ export async function askOrReport(day: string, fallbackOrigin: string): Promise<
   return { asked, reported: await sendReport(audit, fallbackOrigin) };
 }
 
+// One of each question, about real items - a product, the latest Meta
+// campaign, the real category list - so the whole flow can be tried on
+// Telegram. Answers are checked and confirmed but nothing is saved.
+export async function sendTestRequests(day: string): Promise<{ asked: number }> {
+  const { data: product, error: productErr } = await supabase
+    .from("products")
+    .select("id, name, category, sub_category")
+    .not("category", "is", null)
+    .limit(1)
+    .single();
+  if (productErr) throw new Error(`Failed to pick a product: ${productErr.message}`);
+  const { data: ad, error: adErr } = await supabase
+    .from("ad_spend")
+    .select("campaign_id, campaign_name, ad_account_name, date, spend")
+    .eq("source", "meta")
+    .not("campaign_id", "is", null)
+    .order("date", { ascending: false })
+    .order("spend", { ascending: false })
+    .limit(1)
+    .single();
+  if (adErr) throw new Error(`Failed to pick a campaign: ${adErr.message}`);
+
+  let asked = 0;
+  if (await askTikTok(day, day, true)) asked++;
+  const group = product.sub_category ?? product.category ?? "";
+  if (await askCost({ productId: product.id, name: product.name, group, unitsSold: 0 }, day, true)) asked++;
+  const campaign = {
+    campaignId: ad.campaign_id!,
+    campaignName: ad.campaign_name,
+    adAccountName: ad.ad_account_name,
+    date: String(ad.date).slice(0, 10),
+    spend: Number(ad.spend),
+  };
+  if (await askAllocation(campaign, day, true)) asked++;
+  return { asked };
+}
+
 async function openCount(): Promise<number> {
   const { count, error } = await supabase
     .from("agent_requests")
     .select("id", { count: "exact", head: true })
-    .eq("status", "open");
+    .eq("status", "open")
+    .eq("test", false); // an unanswered test never holds up the report
   if (error) throw new Error(`Failed to count open requests: ${error.message}`);
   return count ?? 0;
 }
@@ -310,6 +356,12 @@ export async function handleText(text: string, messageId: number, replyTo: numbe
     return null;
   }
 
+  if (request.test) {
+    await close(request.id);
+    await sendText(`Test OK - would record ${request.label}: ${amount.toLocaleString("en-US")} EGP. Nothing was saved.`, messageId);
+    return null;
+  }
+
   const action: AgentAction =
     request.kind === "tiktok"
       ? { type: "set_tiktok_spend", date: request.item_key, amount }
@@ -380,6 +432,13 @@ export async function handlePollAnswer(pollId: string, optionIds: number[]): Pro
   const all = await listAllocationCategories();
   const covered = new Set(all.filter((c) => categories.includes(c.category)).flatMap((c) => c.groups));
   const subs = subCategories.filter((s) => !covered.has(s));
+
+  if (request.test) {
+    const would = general ? GENERAL : [...subs, ...categories.map((c) => `all of ${c}`)].join(", ");
+    await close(request.id);
+    await sendText(`Test OK - would allocate ${request.label} to ${would}. Nothing was saved.`, polls[0].messageId);
+    return null;
+  }
 
   const [result] = await applyAgentActions([
     general

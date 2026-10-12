@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { askOrReport } from "@/lib/agent/requests";
+import { askOrReport, sendTestRequests } from "@/lib/agent/requests";
 import { egyptToday, addDays } from "@/lib/dates";
 
 // Long enough to render the report PDF when nothing is missing.
@@ -9,7 +9,8 @@ export const dynamic = "force-dynamic";
 // AI MIRAJ's nightly step, run by the agent right after its sync: ask on
 // Telegram for everything the report is waiting on (one message per item), or,
 // when nothing is, send the report. ?day=YYYY-MM-DD picks the day; default is
-// yesterday in Egypt time.
+// yesterday in Egypt time. ?test=1 sends one test question of each kind
+// instead, answered like real ones but saving nothing.
 export async function POST(request: NextRequest) {
   const cronSecret = process.env.CRON_SECRET;
   if (!cronSecret || request.headers.get("authorization") !== `Bearer ${cronSecret}`) {
@@ -18,6 +19,9 @@ export async function POST(request: NextRequest) {
   const dayParam = request.nextUrl.searchParams.get("day");
   const day = dayParam && /^\d{4}-\d{2}-\d{2}$/.test(dayParam) ? dayParam : addDays(egyptToday(), -1);
   try {
+    if (request.nextUrl.searchParams.get("test") === "1") {
+      return NextResponse.json({ ok: true, day, test: true, ...(await sendTestRequests(day)) });
+    }
     return NextResponse.json({ ok: true, day, ...(await askOrReport(day, request.nextUrl.origin)) });
   } catch (err) {
     return NextResponse.json({ ok: false, day, error: err instanceof Error ? err.message : "failed" }, { status: 500 });
