@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { TELEGRAM_API as API, telegramConfig as config, telegramError, chunks } from "@/lib/telegram";
 
 export const maxDuration = 60;
 export const dynamic = "force-dynamic";
@@ -14,41 +15,10 @@ export const dynamic = "force-dynamic";
 // is returned once. TELEGRAM_CHAT_ID pins the conversation: messages from any
 // other chat are ignored, so a stranger who finds the bot cannot instruct it.
 
-const API = "https://api.telegram.org";
-
 type TelegramUpdate = {
   update_id: number;
   message?: { message_id: number; date: number; text?: string; chat?: { id: number } };
 };
-
-function config() {
-  // Trimmed: a value pasted into Vercel can carry a stray space or line break,
-  // which Telegram rejects.
-  const token = process.env.TELEGRAM_BOT_TOKEN?.trim();
-  const chatId = process.env.TELEGRAM_CHAT_ID?.trim();
-  return token && chatId ? { token, chatId } : null;
-}
-
-// Telegram says why it refused (e.g. "chat not found" when the owner never
-// pressed Start on the bot) - pass that on rather than a bare status code.
-async function telegramError(res: Response, call: string): Promise<string> {
-  const body = await res.json().catch(() => null);
-  return `${call} failed (HTTP ${res.status})${body?.description ? `: ${body.description}` : ""}`;
-}
-
-// Splits on line breaks where it can, so a list item is never broken in two.
-function chunks(text: string, max: number): string[] {
-  const out: string[] = [];
-  let rest = text;
-  while (rest.length > max) {
-    const cut = rest.lastIndexOf("\n", max);
-    const at = cut > 0 ? cut : max;
-    out.push(rest.slice(0, at));
-    rest = rest.slice(at).replace(/^\n/, "");
-  }
-  if (rest.trim()) out.push(rest);
-  return out;
-}
 
 function authorized(request: NextRequest): boolean {
   const cronSecret = process.env.CRON_SECRET;
@@ -108,6 +78,9 @@ export async function GET(request: NextRequest) {
   try {
     const res = await fetch(`${API}/bot${cfg.token}/getUpdates?timeout=0&allowed_updates=["message"]`);
     const data = await res.json();
+    // 409: the webhook is set, so Telegram hands every answer to
+    // /api/agent/webhook, which has already recorded it. Nothing is waiting here.
+    if (res.status === 409) return NextResponse.json({ ok: true, replies: [], liveChat: true });
     if (!res.ok || !data.ok) throw new Error(data.description ?? `getUpdates failed (HTTP ${res.status})`);
 
     const updates: TelegramUpdate[] = data.result ?? [];

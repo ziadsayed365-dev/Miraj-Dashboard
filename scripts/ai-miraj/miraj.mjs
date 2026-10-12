@@ -4,10 +4,10 @@
 //   node miraj.mjs sync               press Sync (every step, in the button's order)
 //   node miraj.mjs audit [day]        TikTok entered?, unallocated campaigns, missing costs, report tie-out -> out/audit.json
 //   node miraj.mjs pdf [day]          Export PDF (Income Statement + Analysis by Product) -> out/miraj-<day>.pdf
-//   node miraj.mjs tg <body-file> [attachment]                 send the report on Telegram
-//   node miraj.mjs replies                                     the owner's unread Telegram replies
-//   node miraj.mjs wait [minutes]                              wait up to 8 min (and until 1 AM Cairo) for a reply
-//   node miraj.mjs apply <actions-json-file>                   record TikTok spend / allocate campaigns / set costs he asked for
+//   node miraj.mjs nightly [day]      ask on Telegram for what the report is missing, or send the report (with PDF)
+//   node miraj.mjs webhook            point the Telegram bot at the dashboard, so answers are recorded instantly
+//   node miraj.mjs tg <body-file> [attachment]                 send a message on Telegram
+//   node miraj.mjs apply <actions-json-file>                   record TikTok spend / allocate campaigns / set costs
 //
 // Env: MIRAJ_URL, MIRAJ_CRON_SECRET (the dashboard's CRON_SECRET), and
 // MIRAJ_USERNAME + MIRAJ_PASSWORD (a dashboard login, for the PDF). The
@@ -226,44 +226,21 @@ async function tg(bodyFile, attachment) {
   console.log("sent on Telegram");
 }
 
-async function readReplies() {
-  const res = await fetch(`${base()}/api/agent/telegram`, { headers: cronHeaders() });
+// The dashboard does the asking and the reporting (src/lib/agent/requests.ts):
+// one Telegram message per missing item, and the report with its PDF once
+// nothing is missing. Answers then reach it straight from Telegram.
+async function nightly(day = yesterdayInEgypt()) {
+  const res = await fetch(`${base()}/api/agent/nightly?day=${day}`, { method: "POST", headers: cronHeaders() });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok || !data.ok) throw new Error(data.error ?? `Telegram read failed (HTTP ${res.status})`);
-  fs.writeFileSync(path.join(OUT, "replies.json"), JSON.stringify(data.replies, null, 2));
-  return data.replies;
+  console.log(JSON.stringify(data, null, 2));
+  if (!res.ok || !data.ok) process.exit(1);
 }
 
-async function replies() {
-  console.log(JSON.stringify(await readReplies(), null, 2));
-}
-
-// The nightly run stays open until 1:00 AM Cairo so a reply to tonight's
-// message is acted on within minutes; the hourly replies routine takes over
-// after that. One call checks every minute for at most `minutes` (kept under
-// the agent's 10-minute command limit) and returns as soon as a reply lands.
-// Prints the replies, "no replies yet", or "reply window closed".
-const REPLY_CHECK_MS = 60_000;
-
-function replyWindowEnd() {
-  // 01:00 on the current Egypt day, using the same fixed +3h as yesterdayInEgypt().
-  const egyptDay = new Date(Date.now() + 3 * 3600_000).toISOString().slice(0, 10);
-  return Date.parse(`${egyptDay}T01:00:00Z`) - 3 * 3600_000;
-}
-
-async function wait(minutes = "8") {
-  const end = replyWindowEnd();
-  const stopAt = Math.min(Date.now() + Number(minutes) * 60_000, end);
-  while (Date.now() < end) {
-    const found = await readReplies();
-    if (found.length > 0) {
-      console.log(JSON.stringify(found, null, 2));
-      return;
-    }
-    if (Date.now() + REPLY_CHECK_MS > stopAt) break;
-    await new Promise((resolve) => setTimeout(resolve, REPLY_CHECK_MS));
-  }
-  console.log(Date.now() + REPLY_CHECK_MS > end ? "reply window closed" : "no replies yet");
+async function webhook() {
+  const res = await fetch(`${base()}/api/agent/webhook`, { method: "PUT", headers: cronHeaders() });
+  const data = await res.json().catch(() => ({}));
+  console.log(JSON.stringify(data, null, 2));
+  if (!res.ok || !data.ok) process.exit(1);
 }
 
 async function apply(actionsFile) {
@@ -279,7 +256,7 @@ async function apply(actionsFile) {
 }
 
 const [command, ...args] = process.argv.slice(2);
-const commands = { sync, audit, pdf, tg, replies, wait, apply };
+const commands = { sync, audit, pdf, nightly, webhook, tg, apply };
 if (!commands[command]) {
   console.error(`unknown command "${command}" - expected one of ${Object.keys(commands).join(", ")}`);
   process.exit(2);
