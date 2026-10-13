@@ -56,7 +56,9 @@ export function PurchasingTab({
     return map;
   }, [targets]);
 
-  const products = useMemo(() => targets.filter((t) => t.kind === "product"), [targets]);
+  // Products and variants share one group; a multi-variant product appears as
+  // "Product — Variant" rows, already ordered by product then variant.
+  const products = useMemo(() => targets.filter((t) => t.kind !== "component"), [targets]);
 
   const unitLabel = selected ? COMPONENT_UNIT_LABELS[selected.unit] : "unit";
 
@@ -297,7 +299,7 @@ function PurchaseRow({ purchase: p }: { purchase: PurchaseRecord }) {
       <td className="px-3 py-2">{p.date}</td>
       <td className="px-3 py-2 text-gray-900">
         {p.targetName}
-        <span className="text-xs text-gray-400"> · {p.kind === "component" ? "component" : "product"}</span>
+        <span className="text-xs text-gray-400"> · {p.kind}</span>
       </td>
       <td className="px-3 py-2 text-right">
         {fmt(p.quantity)} {unit}

@@ -2,16 +2,20 @@ import "server-only";
 import { supabase } from "@/lib/supabase";
 import { fetchAllRows } from "@/lib/fetch-all";
 import { unitCostFromTotal } from "@/lib/purchases/unit-cost";
-import { getUnitCostByProduct } from "@/lib/products/catalog";
-import { isActiveStatus } from "@/lib/products/status";
+import { getProductCatalog } from "@/lib/products/catalog";
 import type { ComponentType, ComponentUnit } from "@/lib/products/component-types";
 
 // The account purchases post to. Analysis-only (in_income_statement = false) -
 // see supabase/migrations/0050_purchasing.sql for why it stays out of the P&L.
 export const PURCHASING_ACCOUNT = "Purchasing";
 
-// What a purchase can be recorded against.
-export type PurchaseTargetKind = "component" | "product";
+// What a purchase can be recorded against. A product with several variants is
+// bought per variant, since each variant carries its own cost (migration 0062)
+// and that cost sits ahead of the product's in the engine.
+export type PurchaseTargetKind = "component" | "product" | "variant";
+
+// The purchases column that points at each kind of target.
+const TARGET_COLUMN = { component: "component_id", product: "product_id", variant: "variant_id" } as const;
 
 // One row in the Purchasing dropdown. currentCost is the cost per priced unit
 // right now, used for the 20% increase check before saving.
@@ -19,7 +23,8 @@ export type PurchaseTargetOption = {
   kind: PurchaseTargetKind;
   id: number;
   name: string;
-  // Components carry their own priced unit; a product is always bought in pieces.
+  // Components carry their own priced unit; a product or variant is always
+  // bought in pieces.
   unit: ComponentUnit;
   // Components only - which catalog section to group under in the dropdown.
   type: ComponentType | null;
@@ -45,19 +50,16 @@ export type PurchaseRecord = {
 export { unitCostFromTotal };
 
 // Every catalog component plus every active product, for the purchase dropdown.
+// A multi-variant product is offered as its variants rather than as itself: a
+// product-level cost would be shadowed by any variant that has one of its own.
 export async function getPurchaseTargets(): Promise<PurchaseTargetOption[]> {
-  const [componentRows, productRows, costByProduct] = await Promise.all([
+  const [componentRows, catalog] = await Promise.all([
     fetchAllRows<{ id: number; account: string; type: ComponentType; unit: ComponentUnit; cost: number | null }>(
       supabase,
       "product_components",
       "id, account, type, unit, cost"
     ),
-    fetchAllRows<{ id: number; name: string; status: string | null; unit_cost_override: number | null }>(
-      supabase,
-      "products",
-      "id, name, status, unit_cost_override"
-    ),
-    getUnitCostByProduct(),
+    getProductCatalog(),
   ]);
 
   const components: PurchaseTargetOption[] = componentRows
@@ -72,27 +74,38 @@ export async function getPurchaseTargets(): Promise<PurchaseTargetOption[]> {
     }))
     .sort((a, b) => a.name.localeCompare(b.name));
 
-  const products: PurchaseTargetOption[] = productRows
-    .filter((p) => isActiveStatus(p.status))
-    .map((p) => {
-      // Already resolved in the engine's order at margin.ts (override wins over
-      // the model group's cost), so this is the cost a new purchase is
-      // compared against.
-      const currentCost = costByProduct.get(p.id) ?? null;
-      return {
-        kind: "product" as const,
-        id: p.id,
-        name: p.name,
-        unit: "pcs" as ComponentUnit,
-        type: null,
-        currentCost,
-        // No override yet but a cost all the same means it is coming from the
-        // model group; recording a purchase sets unit_cost_override, which
-        // takes over from it for this product alone.
-        overridesModelCost: p.unit_cost_override === null && currentCost !== null,
-      };
-    })
-    .sort((a, b) => a.name.localeCompare(b.name));
+  // The catalog resolves costs in the engine's order (margin.ts): variant
+  // override, then product override, then model group - so this is the cost a
+  // new purchase is compared against. Its variants are already in position order.
+  const products: PurchaseTargetOption[] = catalog.products
+    .filter((p) => p.isActive)
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .flatMap((p): PurchaseTargetOption[] =>
+      p.variants.length > 0
+        ? p.variants.map((v) => ({
+            kind: "variant" as const,
+            id: v.id,
+            name: `${p.name} — ${v.title}`,
+            unit: "pcs" as ComponentUnit,
+            type: null,
+            currentCost: v.unitCost === null ? null : Number(v.unitCost),
+            overridesModelCost: false,
+          }))
+        : [
+            {
+              kind: "product" as const,
+              id: p.id,
+              name: p.name,
+              unit: "pcs" as ComponentUnit,
+              type: null,
+              currentCost: p.unitCost === null ? null : Number(p.unitCost),
+              // No override yet but a cost all the same means it is coming from
+              // the model group; recording a purchase sets unit_cost_override,
+              // which takes over from it for this product alone.
+              overridesModelCost: p.unitCostOverride === null && p.unitCost !== null,
+            },
+          ]
+    );
 
   return [...components, ...products];
 }
@@ -102,11 +115,13 @@ type PurchaseRow = {
   date: string;
   component_id: number | null;
   product_id: number | null;
+  variant_id: number | null;
   quantity: number;
   amount: number;
   total_amount: number;
   product_components: { account: string; unit: ComponentUnit } | null;
   products: { name: string } | null;
+  product_variants: { title: string; products: { name: string } | null } | null;
 };
 
 // Recorded purchases, newest first.
@@ -114,17 +129,25 @@ export async function getPurchases(): Promise<PurchaseRecord[]> {
   const rows = await fetchAllRows<PurchaseRow>(
     supabase,
     "purchases",
-    "id, date, component_id, product_id, quantity, amount, total_amount, product_components(account, unit), products(name)"
+    "id, date, component_id, product_id, variant_id, quantity, amount, total_amount, product_components(account, unit), products(name), product_variants(title, products(name))"
   );
   return rows
     .map((r) => {
-      const isComponent = r.component_id !== null;
+      const kind: PurchaseTargetKind =
+        r.component_id !== null ? "component" : r.variant_id !== null ? "variant" : "product";
+      const variant = r.product_variants;
+      const targetName =
+        kind === "component"
+          ? r.product_components?.account
+          : kind === "variant"
+            ? variant && `${variant.products?.name ?? "?"} — ${variant.title}`
+            : r.products?.name;
       return {
         id: r.id,
         date: r.date,
-        kind: (isComponent ? "component" : "product") as PurchaseTargetKind,
-        targetName: (isComponent ? r.product_components?.account : r.products?.name) ?? "?",
-        unit: (isComponent ? r.product_components?.unit ?? "pcs" : "pcs") as ComponentUnit,
+        kind,
+        targetName: targetName ?? "?",
+        unit: (kind === "component" ? r.product_components?.unit ?? "pcs" : "pcs") as ComponentUnit,
         quantity: Number(r.quantity),
         amount: Number(r.amount),
         total: Number(r.total_amount),
@@ -145,11 +168,10 @@ async function purchasingAccountId(): Promise<number> {
 // delete. A target with no purchases left keeps whatever cost it had before
 // Purchasing existed rather than being cleared.
 async function syncCurrentCost(kind: PurchaseTargetKind, targetId: number): Promise<void> {
-  const column = kind === "component" ? "component_id" : "product_id";
   const { data: latest, error } = await supabase
     .from("purchases")
     .select("amount")
-    .eq(column, targetId)
+    .eq(TARGET_COLUMN[kind], targetId)
     .order("date", { ascending: false })
     .order("id", { ascending: false })
     .limit(1)
@@ -162,8 +184,32 @@ async function syncCurrentCost(kind: PurchaseTargetKind, targetId: number): Prom
   const { error: upErr } =
     kind === "component"
       ? await supabase.from("product_components").update({ cost, updated_at: now }).eq("id", targetId)
-      : await supabase.from("products").update({ unit_cost_override: cost, updated_at: now }).eq("id", targetId);
+      : await supabase
+          .from(kind === "variant" ? "product_variants" : "products")
+          .update({ unit_cost_override: cost, updated_at: now })
+          .eq("id", targetId);
   if (upErr) throw new Error(`Failed to update cost: ${upErr.message}`);
+}
+
+// The name the ledger note carries; loading it also confirms the target exists.
+async function purchaseTargetName(kind: PurchaseTargetKind, targetId: number): Promise<string> {
+  if (kind === "variant") {
+    const { data, error } = await supabase
+      .from("product_variants")
+      .select("title, products(name)")
+      .eq("id", targetId)
+      .maybeSingle();
+    if (error) throw new Error(`Failed to load variant: ${error.message}`);
+    if (!data) throw new Error("That variant no longer exists");
+    const product = data.products as unknown as { name: string } | null;
+    return `${product?.name ?? "?"} — ${data.title}`;
+  }
+  const table = kind === "component" ? "product_components" : "products";
+  const nameColumn = kind === "component" ? "account" : "name";
+  const { data, error } = await supabase.from(table).select(`id, ${nameColumn}`).eq("id", targetId).maybeSingle();
+  if (error) throw new Error(`Failed to load ${kind}: ${error.message}`);
+  if (!data) throw new Error(`That ${kind} no longer exists`);
+  return (data as unknown as Record<string, string>)[nameColumn];
 }
 
 // Record a purchase from the total paid. Three writes, in order: the purchase
@@ -176,7 +222,7 @@ export async function createPurchase(input: {
   quantity: number;
   totalAmount: number;
 }): Promise<number> {
-  if (input.kind !== "component" && input.kind !== "product") throw new Error("Pick a component or a product");
+  if (!Object.hasOwn(TARGET_COLUMN, input.kind)) throw new Error("Pick a component or a product");
   if (!Number.isFinite(input.targetId)) throw new Error("Pick something to purchase");
   if (!/^\d{4}-\d{2}-\d{2}$/.test(input.date)) throw new Error("Invalid date");
   if (!Number.isFinite(input.quantity) || input.quantity <= 0) throw new Error("Quantity must be positive");
@@ -185,17 +231,7 @@ export async function createPurchase(input: {
   }
 
   const unitCost = unitCostFromTotal(input.totalAmount, input.quantity);
-
-  const table = input.kind === "component" ? "product_components" : "products";
-  const nameColumn = input.kind === "component" ? "account" : "name";
-  const { data: target, error: targetErr } = await supabase
-    .from(table)
-    .select(`id, ${nameColumn}`)
-    .eq("id", input.targetId)
-    .maybeSingle();
-  if (targetErr) throw new Error(`Failed to load ${input.kind}: ${targetErr.message}`);
-  if (!target) throw new Error(`That ${input.kind} no longer exists`);
-  const targetName = (target as unknown as Record<string, string>)[nameColumn];
+  const targetName = await purchaseTargetName(input.kind, input.targetId);
 
   const { data: purchase, error } = await supabase
     .from("purchases")
@@ -203,6 +239,7 @@ export async function createPurchase(input: {
       date: input.date,
       component_id: input.kind === "component" ? input.targetId : null,
       product_id: input.kind === "product" ? input.targetId : null,
+      variant_id: input.kind === "variant" ? input.targetId : null,
       quantity: input.quantity,
       amount: unitCost,
       total_amount: input.totalAmount,
@@ -237,7 +274,7 @@ export async function createPurchase(input: {
 export async function deletePurchase(id: number): Promise<void> {
   const { data: row, error: rowErr } = await supabase
     .from("purchases")
-    .select("component_id, product_id, expense_entry_id")
+    .select("component_id, product_id, variant_id, expense_entry_id")
     .eq("id", id)
     .maybeSingle();
   if (rowErr) throw new Error(`Failed to load purchase: ${rowErr.message}`);
@@ -253,4 +290,5 @@ export async function deletePurchase(id: number): Promise<void> {
 
   if (row.component_id !== null) await syncCurrentCost("component", row.component_id);
   else if (row.product_id !== null) await syncCurrentCost("product", row.product_id);
+  else if (row.variant_id !== null) await syncCurrentCost("variant", row.variant_id);
 }

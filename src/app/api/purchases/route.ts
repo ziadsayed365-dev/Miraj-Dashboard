@@ -17,7 +17,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ ok: false, error: "invalid body" }, { status: 400 });
   }
 
-  if (body.kind !== "component" && body.kind !== "product") {
+  if (body.kind !== "component" && body.kind !== "product" && body.kind !== "variant") {
     return NextResponse.json({ ok: false, error: "Pick a component or a product" }, { status: 400 });
   }
 
