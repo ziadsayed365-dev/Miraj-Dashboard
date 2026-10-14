@@ -152,11 +152,11 @@ export async function stopPoll(messageId: number, chat?: string): Promise<void> 
   await call("stopPoll", chat ?? chats()[0], { message_id: messageId }).catch(() => {});
 }
 
-// The report, to every chat, or to one when someone asked for it.
-export async function sendDocument(caption: string, pdf: Buffer, filename: string, chat?: string): Promise<void> {
+// The report, to every chat.
+export async function sendDocument(caption: string, pdf: Buffer, filename: string): Promise<void> {
   const cfg = telegramConfig();
   if (!cfg) throw new Error("Telegram not configured");
-  await toEach(chat ? [chat] : cfg.chatIds, async (to) => {
+  await toEach(cfg.chatIds, async (to) => {
     // A PDF caption holds only 1,024 characters; a longer one goes ahead of it.
     const captioned = caption.length <= 1024;
     if (!captioned) await sendText(caption, { chat: to });

@@ -240,9 +240,9 @@ const PDF_ATTEMPTS = 3;
 
 // The report (with the Campaigns P&L as its last two pages) never goes out
 // without its PDF. If it can't be made, the owner is
-// told and can reply "pdf" to try again (handleText). chat: whoever asked for it
-// with "pdf" - otherwise it goes to every chat.
-async function sendReport(audit: NightlyAudit, fallbackOrigin: string, opts: { force?: boolean; chat?: string } = {}): Promise<boolean> {
+// told and can reply "pdf" to try again (handleText). It goes to every chat,
+// whoever's answer or "pdf" set it off.
+async function sendReport(audit: NightlyAudit, fallbackOrigin: string, opts: { force?: boolean } = {}): Promise<boolean> {
   // Claimed first, so the report goes out once however many answers land at
   // once. A "pdf" request skips the claim: it was asked for.
   if (!opts.force) {
@@ -281,12 +281,11 @@ async function sendReport(audit: NightlyAudit, fallbackOrigin: string, opts: { f
       await sendText(
         `AI MIRAJ: ${fmtDay(audit.day)} report is ready, but the PDF didn't come out (${lastError.slice(0, 200)}).
 
-Reply "pdf" to try again.`,
-        opts.chat ? { chat: opts.chat } : undefined
+Reply "pdf" to try again.`
       );
       return false;
     }
-    await sendDocument(reportText(audit), pdf, reportFileName(audit.day), opts.chat);
+    await sendDocument(reportText(audit), pdf, reportFileName(audit.day));
     return true;
   } catch (err) {
     // Not sent: release the claim so the next answer or run tries again.
@@ -303,14 +302,13 @@ async function close(id: number): Promise<void> {
 
 // What to do once an answer is recorded - runs after the webhook has answered
 // Telegram, since the report can take a minute to render.
-// pdf: the owner asked for the report ("pdf"), sent whatever else is open, to
-// the chat that asked (chat).
-export type FollowUp = { day: string; recomputeMargins: boolean; pdf?: boolean; chat?: string } | null;
+// pdf: the owner asked for the report ("pdf"), sent whatever else is open.
+export type FollowUp = { day: string; recomputeMargins: boolean; pdf?: boolean } | null;
 
 export async function followUp(f: FollowUp, fallbackOrigin: string): Promise<void> {
   if (!f) return;
   if (f.pdf) {
-    await sendReport(await runNightlyAudit(f.day), fallbackOrigin, { force: true, chat: f.chat });
+    await sendReport(await runNightlyAudit(f.day), fallbackOrigin, { force: true });
     return;
   }
   if (f.recomputeMargins) {
@@ -332,7 +330,7 @@ export async function handleText(text: string, chat: string, messageId: number, 
   if (ask) {
     const day = ask[2] ?? addDays(egyptToday(), -1);
     await answer(`Making the ${fmtDay(day)} report...`);
-    return { day, recomputeMargins: false, pdf: true, chat };
+    return { day, recomputeMargins: false, pdf: true };
   }
   let request: RequestRow | null = null;
   if (replyTo) {
