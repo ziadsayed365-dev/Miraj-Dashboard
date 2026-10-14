@@ -9,12 +9,13 @@ import { computeMargins } from "@/lib/engine/margin";
 import { listAllocationCategories } from "@/lib/products/catalog";
 import { applyAgentActions, type AgentAction } from "@/lib/agent/actions";
 import { renderReportPdf, reportFileName } from "@/lib/report-pdf";
-import { sendText, sendPoll, stopPoll, sendDocument } from "@/lib/telegram";
+import { sendText, sendPoll, stopPoll, sendDocument, telegramConfig, type Sent, type To } from "@/lib/telegram";
 
 // AI MIRAJ's questions on Telegram. Everything the report is waiting on goes
 // out as its own message - one per TikTok day, one per product with no cost,
 // one poll per unallocated campaign - and the owner answers each whenever it
-// suits them: a reply with the number, or a tap on the poll. The webhook
+// suits them: a reply with the number, or a tap on the poll. Every chat on
+// TELEGRAM_CHAT_ID is asked, and whoever answers first settles it. The webhook
 // (/api/agent/webhook) hands every answer here, it is recorded at once, and
 // when nothing is left open the day's report goes out with its PDF.
 
@@ -23,7 +24,9 @@ type Kind = "tiktok" | "cost" | "allocation";
 // One poll of an allocation request. step: "category" (pick categories),
 // "groups" (pick groups directly, when they all fit in one poll) or
 // "sub:<category>" (pick groups inside one chosen category).
-type PollEntry = { pollId: string; messageId: number; step: string; options: string[]; answer: number[] | null };
+// chat: where it was first sent (missing on polls from before there was more
+// than one chat - those went to the owner's).
+type PollEntry = { pollId: string; messageId: number; chat?: string; step: string; options: string[]; answer: number[] | null };
 
 type RequestRow = {
   id: number;
@@ -31,7 +34,10 @@ type RequestRow = {
   item_key: string;
   day: string;
   status: "open" | "done";
+  // The question's message in the owner's chat - only on questions from before
+  // there was more than one chat. Newer ones keep each chat's copy in messages.
   message_id: number | null;
+  messages: Sent[];
   polls: PollEntry[];
   // A test question (sendTestRequests): answered like a real one, records nothing.
   test: boolean;
@@ -99,21 +105,21 @@ const testTag = (test: boolean) => (test ? "[TEST - nothing will be saved]\n" : 
 
 async function askTikTok(date: string, day: string, test = false) {
   return open("tiktok", date, day, { test, label: `TikTok spend for ${fmtDay(date)}` }, async () => ({
-    message_id: await sendText(`${testTag(test)}TikTok spend for ${fmtDay(date)}?\n\nReply to this message with the amount in EGP (0 if there was none).`),
+    messages: await sendText(`${testTag(test)}TikTok spend for ${fmtDay(date)}?\n\nReply to this message with the amount in EGP (0 if there was none).`),
   }));
 }
 
 async function askCost(p: NightlyAudit["missingCostProducts"][number], day: string, test = false) {
   return open("cost", String(p.productId), day, { test, label: `the unit cost of ${p.name}` }, async () => ({
-    message_id: await sendText(
+    messages: await sendText(
       `${testTag(test)}Cost missing: ${p.name}\n${p.group} - ${p.unitsSold} sold\n\nReply to this message with its unit cost in EGP.`
     ),
   }));
 }
 
 async function allocationPoll(question: string, step: string, options: string[]): Promise<PollEntry> {
-  const { pollId, messageId } = await sendPoll(question, options);
-  return { pollId, messageId, step, options, answer: null };
+  const { pollId, messageId, chat } = await sendPoll(question, options);
+  return { pollId, messageId, chat, step, options, answer: null };
 }
 
 async function askAllocation(c: NightlyAudit["unallocatedCampaigns"][number], day: string, test = false) {
@@ -234,8 +240,9 @@ const PDF_ATTEMPTS = 3;
 
 // The report (with the Campaigns P&L as its last two pages) never goes out
 // without its PDF. If it can't be made, the owner is
-// told and can reply "pdf" to try again (handleText).
-async function sendReport(audit: NightlyAudit, fallbackOrigin: string, opts: { force?: boolean } = {}): Promise<boolean> {
+// told and can reply "pdf" to try again (handleText). chat: whoever asked for it
+// with "pdf" - otherwise it goes to every chat.
+async function sendReport(audit: NightlyAudit, fallbackOrigin: string, opts: { force?: boolean; chat?: string } = {}): Promise<boolean> {
   // Claimed first, so the report goes out once however many answers land at
   // once. A "pdf" request skips the claim: it was asked for.
   if (!opts.force) {
@@ -274,11 +281,12 @@ async function sendReport(audit: NightlyAudit, fallbackOrigin: string, opts: { f
       await sendText(
         `AI MIRAJ: ${fmtDay(audit.day)} report is ready, but the PDF didn't come out (${lastError.slice(0, 200)}).
 
-Reply "pdf" to try again.`
+Reply "pdf" to try again.`,
+        opts.chat ? { chat: opts.chat } : undefined
       );
       return false;
     }
-    await sendDocument(reportText(audit), pdf, reportFileName(audit.day));
+    await sendDocument(reportText(audit), pdf, reportFileName(audit.day), opts.chat);
     return true;
   } catch (err) {
     // Not sent: release the claim so the next answer or run tries again.
@@ -295,13 +303,14 @@ async function close(id: number): Promise<void> {
 
 // What to do once an answer is recorded - runs after the webhook has answered
 // Telegram, since the report can take a minute to render.
-// pdf: the owner asked for the report ("pdf"), sent whatever else is open.
-export type FollowUp = { day: string; recomputeMargins: boolean; pdf?: boolean } | null;
+// pdf: the owner asked for the report ("pdf"), sent whatever else is open, to
+// the chat that asked (chat).
+export type FollowUp = { day: string; recomputeMargins: boolean; pdf?: boolean; chat?: string } | null;
 
 export async function followUp(f: FollowUp, fallbackOrigin: string): Promise<void> {
   if (!f) return;
   if (f.pdf) {
-    await sendReport(await runNightlyAudit(f.day), fallbackOrigin, { force: true });
+    await sendReport(await runNightlyAudit(f.day), fallbackOrigin, { force: true, chat: f.chat });
     return;
   }
   if (f.recomputeMargins) {
@@ -314,21 +323,33 @@ export async function followUp(f: FollowUp, fallbackOrigin: string): Promise<voi
 }
 
 // A text message: the number answering a TikTok or cost question.
-export async function handleText(text: string, messageId: number, replyTo: number | null): Promise<FollowUp> {
+// chat: the chat it came from, which every answer goes back to.
+export async function handleText(text: string, chat: string, messageId: number, replyTo: number | null): Promise<FollowUp> {
+  const answer = (reply: string) => sendText(reply, { chat, replyTo: messageId });
   // "pdf", "report", "redo", "resend"... (optionally with a day): send that
   // day's report now.
   const ask = text.trim().match(/^(pdf|report|redo|resend|again|send|تقرير|اعاده|اعادة|إعادة)(?:\s+(\d{4}-\d{2}-\d{2}))?$/i);
   if (ask) {
     const day = ask[2] ?? addDays(egyptToday(), -1);
-    await sendText(`Making the ${fmtDay(day)} report...`, messageId);
-    return { day, recomputeMargins: false, pdf: true };
+    await answer(`Making the ${fmtDay(day)} report...`);
+    return { day, recomputeMargins: false, pdf: true, chat };
   }
   let request: RequestRow | null = null;
   if (replyTo) {
-    const { data } = await supabase.from("agent_requests").select("*").eq("message_id", replyTo).maybeSingle();
+    const { data } = await supabase
+      .from("agent_requests")
+      .select("*")
+      // jsonb containment; message ids are only unique within a chat.
+      .filter("messages", "cs", JSON.stringify([{ chat, id: replyTo }]))
+      .maybeSingle();
     request = data as RequestRow | null;
+    if (!request && chat === telegramConfig()?.chatIds[0]) {
+      // A question from before there was more than one chat.
+      const { data: older } = await supabase.from("agent_requests").select("*").eq("message_id", replyTo).maybeSingle();
+      request = older as RequestRow | null;
+    }
     if (request?.status === "done") {
-      await sendText("That one is already recorded. To change it, use the dashboard.", messageId);
+      await answer("That one is already recorded. To change it, use the dashboard.");
       return null;
     }
   }
@@ -337,30 +358,29 @@ export async function handleText(text: string, messageId: number, replyTo: numbe
     const { data } = await supabase.from("agent_requests").select("*").eq("status", "open").in("kind", ["tiktok", "cost"]);
     const waiting = (data ?? []) as RequestRow[];
     if (waiting.length !== 1) {
-      await sendText(
+      await answer(
         waiting.length
           ? "Reply to the question you're answering (swipe left on it), with just the number."
-          : 'Nothing is waiting for an answer right now. Send "pdf" to get yesterday\'s report again.',
-        messageId
+          : 'Nothing is waiting for an answer right now. Send "pdf" to get yesterday\'s report again.'
       );
       return null;
     }
     request = waiting[0];
   }
   if (request.kind !== "tiktok" && request.kind !== "cost") {
-    await sendText("Answer that one by tapping the poll.", messageId);
+    await answer("Answer that one by tapping the poll.");
     return null;
   }
 
   const amount = parseAmount(text.trim());
   if (amount === null || (request.kind === "cost" && amount <= 0)) {
-    await sendText(request.kind === "cost" ? "Send just the unit cost, e.g. 120" : "Send just the amount, e.g. 3500 (0 if none)", messageId);
+    await answer(request.kind === "cost" ? "Send just the unit cost, e.g. 120" : "Send just the amount, e.g. 3500 (0 if none)");
     return null;
   }
 
   if (request.test) {
     await close(request.id);
-    await sendText(`Test OK - would record ${request.label}: ${amount.toLocaleString("en-US")} EGP. Nothing was saved.`, messageId);
+    await answer(`Test OK - would record ${request.label}: ${amount.toLocaleString("en-US")} EGP. Nothing was saved.`);
     return null;
   }
 
@@ -372,15 +392,15 @@ export async function handleText(text: string, messageId: number, replyTo: numbe
   if (result.ok || /already/i.test(result.detail)) {
     if (result.ok) dropReportCache();
     await close(request.id);
-    await sendText(result.ok ? `Recorded - ${result.detail}` : result.detail, messageId);
+    await answer(result.ok ? `Recorded - ${result.detail}` : result.detail);
     return { day: request.day, recomputeMargins: result.ok && request.kind === "cost" };
   }
-  await sendText(`Couldn't record it: ${result.detail}`, messageId);
+  await answer(`Couldn't record it: ${result.detail}`);
   return null;
 }
 
-// A vote on one of the allocation polls.
-export async function handlePollAnswer(pollId: string, optionIds: number[]): Promise<FollowUp> {
+// A vote on one of the allocation polls, from voter's chat.
+export async function handlePollAnswer(pollId: string, optionIds: number[], voter: string): Promise<FollowUp> {
   if (optionIds.length === 0) return null; // vote withdrawn
   const { data } = await supabase
     .from("agent_requests")
@@ -396,7 +416,7 @@ export async function handlePollAnswer(pollId: string, optionIds: number[]): Pro
   const poll = polls.find((p) => p.pollId === pollId)!;
   if (poll.answer) return null;
   poll.answer = optionIds;
-  await stopPoll(poll.messageId);
+  await stopPoll(poll.messageId, poll.chat);
   const picked = optionIds.map((i) => poll.options[i]);
 
   // Category step: a category with groups of its own asks again, inside it.
@@ -412,6 +432,11 @@ export async function handlePollAnswer(pollId: string, optionIds: number[]): Pro
   }
   await supabase.from("agent_requests").update({ polls }).eq("id", request.id);
   if (polls.some((p) => !p.answer)) return null;
+
+  // The answer goes to whoever voted - as a reply to the poll when it was sent
+  // to their chat rather than forwarded there.
+  const first = polls[0];
+  const toVoter: To = { chat: voter, replyTo: voter === (first.chat ?? telegramConfig()?.chatIds[0]) ? first.messageId : undefined };
 
   // Every poll answered: put the picks together.
   const subCategories: string[] = [];
@@ -438,7 +463,7 @@ export async function handlePollAnswer(pollId: string, optionIds: number[]): Pro
   if (request.test) {
     const would = general ? GENERAL : [...subs, ...categories.map((c) => `all of ${c}`)].join(", ");
     await close(request.id);
-    await sendText(`Test OK - would allocate ${request.label} to ${would}. Nothing was saved.`, polls[0].messageId);
+    await sendText(`Test OK - would allocate ${request.label} to ${would}. Nothing was saved.`, toVoter);
     return null;
   }
 
@@ -451,11 +476,11 @@ export async function handlePollAnswer(pollId: string, optionIds: number[]): Pro
   if (result.ok || /already/i.test(result.detail)) {
     if (result.ok) dropReportCache();
     await close(request.id);
-    await sendText(result.ok ? `Allocated to ${target}.` : result.detail, polls[0].messageId);
+    await sendText(result.ok ? `Allocated to ${target}.` : result.detail, toVoter);
     return { day: request.day, recomputeMargins: false };
   }
   // Not saved: reopen it from the top.
-  await sendText(`Couldn't allocate it: ${result.detail}`, polls[0].messageId);
+  await sendText(`Couldn't allocate it: ${result.detail}`, toVoter);
   await supabase.from("agent_requests").delete().eq("id", request.id);
   return { day: request.day, recomputeMargins: false };
 }

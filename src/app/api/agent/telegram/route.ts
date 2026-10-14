@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { TELEGRAM_API as API, telegramConfig as config, telegramError, chunks } from "@/lib/telegram";
+import { TELEGRAM_API as API, telegramConfig as config, telegramError, chunks, toEach, isOwnerChat } from "@/lib/telegram";
 
 export const maxDuration = 60;
 export const dynamic = "force-dynamic";
@@ -12,8 +12,9 @@ export const dynamic = "force-dynamic";
 //   GET  - read the owner's replies since the last read
 //
 // Reads are confirmed back to Telegram as they are handed over, so each reply
-// is returned once. TELEGRAM_CHAT_ID pins the conversation: messages from any
-// other chat are ignored, so a stranger who finds the bot cannot instruct it.
+// is returned once. TELEGRAM_CHAT_ID pins the conversations (a comma-separated
+// list, see src/lib/telegram.ts): messages from any other chat are ignored, so
+// a stranger who finds the bot cannot instruct it.
 
 type TelegramUpdate = {
   update_id: number;
@@ -42,29 +43,33 @@ export async function POST(request: NextRequest) {
   const captioned = hasPdf && text.length <= 1024;
 
   try {
-    if (!captioned) {
-      for (const chunk of chunks(text, 4096)) {
-        const res = await fetch(`${API}/bot${cfg.token}/sendMessage`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ chat_id: cfg.chatId, text: chunk }),
-        });
-        if (!res.ok) throw new Error(await telegramError(res, "sendMessage"));
+    // Every chat on TELEGRAM_CHAT_ID gets it; one that fails doesn't stop the rest.
+    const sent = await toEach(cfg.chatIds, async (chat) => {
+      if (!captioned) {
+        for (const chunk of chunks(text, 4096)) {
+          const res = await fetch(`${API}/bot${cfg.token}/sendMessage`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ chat_id: chat, text: chunk }),
+          });
+          if (!res.ok) throw new Error(await telegramError(res, "sendMessage"));
+        }
       }
-    }
-    if (hasPdf) {
-      const form = new FormData();
-      form.append("chat_id", cfg.chatId);
-      if (captioned) form.append("caption", text);
-      form.append(
-        "document",
-        new Blob([new Uint8Array(Buffer.from(pdfBase64, "base64"))], { type: "application/pdf" }),
-        typeof filename === "string" && filename ? filename : "izar-report.pdf"
-      );
-      const res = await fetch(`${API}/bot${cfg.token}/sendDocument`, { method: "POST", body: form });
-      if (!res.ok) throw new Error(await telegramError(res, "sendDocument"));
-    }
-    return NextResponse.json({ ok: true });
+      if (hasPdf) {
+        const form = new FormData();
+        form.append("chat_id", chat);
+        if (captioned) form.append("caption", text);
+        form.append(
+          "document",
+          new Blob([new Uint8Array(Buffer.from(pdfBase64, "base64"))], { type: "application/pdf" }),
+          typeof filename === "string" && filename ? filename : "izar-report.pdf"
+        );
+        const res = await fetch(`${API}/bot${cfg.token}/sendDocument`, { method: "POST", body: form });
+        if (!res.ok) throw new Error(await telegramError(res, "sendDocument"));
+      }
+    });
+    const missed = cfg.chatIds.filter((chat) => !sent.some((s) => s.chat === chat));
+    return NextResponse.json({ ok: true, ...(missed.length ? { missed } : {}) });
   } catch (err) {
     return NextResponse.json({ ok: false, error: err instanceof Error ? err.message : "send failed" }, { status: 502 });
   }
@@ -85,7 +90,7 @@ export async function GET(request: NextRequest) {
 
     const updates: TelegramUpdate[] = data.result ?? [];
     const replies = updates
-      .filter((u) => u.message?.text && String(u.message.chat?.id) === cfg.chatId)
+      .filter((u) => u.message?.text && isOwnerChat(u.message.chat?.id))
       .map((u) => ({ at: new Date(u.message!.date * 1000).toISOString(), text: u.message!.text as string }));
 
     // Confirm everything handed over, so the next read starts after it.

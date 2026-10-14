@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse, after } from "next/server";
 import { handleText, handlePollAnswer, followUp, type FollowUp } from "@/lib/agent/requests";
-import { TELEGRAM_API, telegramConfig, telegramError, webhookSecret } from "@/lib/telegram";
+import { TELEGRAM_API, telegramConfig, telegramError, webhookSecret, isOwnerChat } from "@/lib/telegram";
 
 // Long enough for the report PDF that may follow the last answer.
 export const maxDuration = 300;
@@ -49,11 +49,11 @@ export async function POST(request: NextRequest) {
   try {
     const msg = update.message;
     const vote = update.poll_answer;
-    // Only the owner's chat - in a private chat that is also the owner's user id.
-    if (msg && String(msg.chat?.id) === cfg.chatId && msg.text?.trim()) {
-      next = await handleText(msg.text, msg.message_id, msg.reply_to_message?.message_id ?? null);
-    } else if (vote && String(vote.user?.id) === cfg.chatId) {
-      next = await handlePollAnswer(vote.poll_id, vote.option_ids);
+    // Only the owner's chats - in a private chat that is also the user's id.
+    if (msg && isOwnerChat(msg.chat?.id) && msg.text?.trim()) {
+      next = await handleText(msg.text, String(msg.chat!.id), msg.message_id, msg.reply_to_message?.message_id ?? null);
+    } else if (vote && isOwnerChat(vote.user?.id)) {
+      next = await handlePollAnswer(vote.poll_id, vote.option_ids, String(vote.user!.id));
     }
   } catch (err) {
     // Acknowledged anyway: a retry would hit the same error.
