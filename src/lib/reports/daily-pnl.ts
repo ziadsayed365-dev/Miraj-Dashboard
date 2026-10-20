@@ -8,6 +8,7 @@ import { isMonthMature, getProjectionRate } from "@/lib/engine/monthly-rate";
 import { isHandedToCourier } from "./actual-mode";
 import { getOpenMonthRows, getRateProjectedRows } from "./open-month-projection";
 import { getOverheadResolver, type CustomPnlLine } from "./expenses-ledger";
+import { getMarketingAgencyFeeMonthly, marketingAgencyFeeForDay } from "./marketing-agency-fee";
 import { REPORT_CACHE_SECONDS, REPORT_CACHE_TAG } from "./cache";
 import { getChatOrderDailyTotals } from "@/lib/chat-orders/reporting";
 
@@ -38,13 +39,13 @@ export type DailyPnlRow = {
   adSpend: number; // total marketing = metaSpend + tiktokSpend
   metaSpend: number; // Meta (Facebook/Instagram) ad spend
   tiktokSpend: number; // TikTok ad spend
-  // The agency's cut, MARKETING_AGENCY_FEE_PCT of total marketing (Meta+TikTok).
-  // Derived, never recorded: it moves with ad spend by definition, so booking it
-  // in the expense ledger would freeze a number that is supposed to track. Sits
-  // below Contribution Profit rather than inside it - the ad spend it is charged
-  // on is already subtracted up there, and folding the fee in too would make
-  // Contribution Profit answer a different question than it does for every other
-  // month before the agency existed.
+  // The agency's cut. Until 2026-10-19, 12.5% of total marketing (Meta+TikTok),
+  // derived per day from the ad spend. From 2026-10-19 on, a flat monthly fee the
+  // owner sets in Settings, charged at fee / 30 per day. Either way it sits below
+  // Contribution Profit rather than inside it - the ad spend is already
+  // subtracted up there, and folding the fee in too would make Contribution
+  // Profit answer a different question than it does for every other month before
+  // the agency existed. See ./marketing-agency-fee.
   marketingAgencyFee: number;
   generalAdSpend: number; // MEMO: the part of adSpend promoting no single model (already inside adSpend)
   contributionProfit: number; // grossProfit - adSpend
@@ -137,10 +138,10 @@ export type DailyPnlResult = {
 
 const RESOLVED_OUTCOMES = ["delivered", "failed_rto", "exchange", "pickup_return"];
 
-// The marketing agency bills 12.5% of what Miraj spends on ads. Applied to every
-// month, including the ones reconstructed from Shopify - the ad spend behind
-// them is real and fully recorded, so the fee on it is as real as any other.
-export const MARKETING_AGENCY_FEE_PCT = 0.125;
+// The marketing agency billed 12.5% of ad spend until 2026-10-19, then switched
+// to a flat monthly fee the owner sets in Settings (charged at amount / 30 per
+// day from that date on). Both halves live in ./marketing-agency-fee, applied by
+// date below so the transition month keeps every pre-19th day on the old basis.
 
 // Miraj's first six months came out of Shopify without a single Bosta tracking
 // number - not one of those ~19,600 orders carries an outcome, and no sync can
@@ -530,12 +531,14 @@ async function computeDailyPnl(from: string, to: string, mode: DailyPnlMode = "p
   }
 
   const overheads = await getOverheadResolver();
+  const agencyFeeMonthly = await getMarketingAgencyFeeMonthly();
   for (const day of byDate.values()) {
     day.grossProfit = day.revenue - day.cogs;
     day.contributionProfit = day.grossProfit - day.adSpend;
     // Computed here rather than where ad spend is folded in, so it always sees
-    // the day's FINAL marketing figure (Meta and TikTok both land above).
-    day.marketingAgencyFee = day.adSpend * MARKETING_AGENCY_FEE_PCT;
+    // the day's FINAL marketing figure (Meta and TikTok both land above). Before
+    // 2026-10-19 it's 12.5% of that spend; from then on, the flat monthly fee / 30.
+    day.marketingAgencyFee = marketingAgencyFeeForDay(day.date, day.adSpend, agencyFeeMonthly);
     // Each fixed overhead spread as month amount / days in month, resolved per
     // month (hardcoded before the cutover, recorded actuals for ended months,
     // the Settings assumption for the open month).

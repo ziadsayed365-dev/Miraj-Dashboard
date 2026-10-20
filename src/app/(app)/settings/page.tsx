@@ -1,5 +1,6 @@
 import { getUsers } from "@/lib/settings/users";
 import { getExpenseAssumptions } from "@/lib/reports/expenses-ledger";
+import { getMarketingAgencyFeeMonthly } from "@/lib/reports/marketing-agency-fee";
 import { getAdAllocations } from "@/lib/reports/ad-allocation";
 import { listAllocationCategories } from "@/lib/products/catalog";
 import { SettingsTabs } from "../settings-tabs";
@@ -7,9 +8,10 @@ import { SettingsTabs } from "../settings-tabs";
 export const dynamic = "force-dynamic";
 
 export default async function Settings() {
-  const [users, assumptions, adAllocations, categoryTree] = await Promise.all([
+  const [users, assumptions, marketingAgencyFeeMonthly, adAllocations, categoryTree] = await Promise.all([
     getUsers(),
     getExpenseAssumptions(),
+    getMarketingAgencyFeeMonthly(),
     getAdAllocations(),
     listAllocationCategories(),
   ]);
@@ -20,7 +22,13 @@ export default async function Settings() {
         <h1 className="text-xl font-semibold text-gray-900">Settings</h1>
       </div>
 
-      <SettingsTabs users={users} assumptions={assumptions} adAllocations={adAllocations} categoryTree={categoryTree} />
+      <SettingsTabs
+        users={users}
+        assumptions={assumptions}
+        marketingAgencyFeeMonthly={marketingAgencyFeeMonthly}
+        adAllocations={adAllocations}
+        categoryTree={categoryTree}
+      />
     </div>
   );
 }

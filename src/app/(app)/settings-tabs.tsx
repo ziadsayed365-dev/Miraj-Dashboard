@@ -8,6 +8,7 @@ import type { AllocationCategory } from "@/lib/products/catalog";
 
 import { SettingsPage } from "./settings-page";
 import { ExpenseAssumptionsSettings } from "./expense-assumptions-settings";
+import { MarketingAgencyFeeSettings } from "./marketing-agency-fee-settings";
 import { AdAllocationsSettings } from "./ad-allocations-settings";
 
 const TABS = [
@@ -21,11 +22,13 @@ type SettingsTab = (typeof TABS)[number]["key"];
 export function SettingsTabs({
   users,
   assumptions,
+  marketingAgencyFeeMonthly,
   adAllocations,
   categoryTree,
 }: {
   users: AppUser[];
   assumptions: ExpenseAssumption[];
+  marketingAgencyFeeMonthly: number;
   adAllocations: AdAllocation[];
   categoryTree: AllocationCategory[];
 }) {
@@ -49,7 +52,12 @@ export function SettingsTabs({
       </div>
 
       {active === "users" && <SettingsPage users={users} />}
-      {active === "assumptions" && <ExpenseAssumptionsSettings assumptions={assumptions} />}
+      {active === "assumptions" && (
+        <div className="space-y-6">
+          <ExpenseAssumptionsSettings assumptions={assumptions} />
+          <MarketingAgencyFeeSettings monthlyAmount={marketingAgencyFeeMonthly} />
+        </div>
+      )}
       {active === "ads" && <AdAllocationsSettings allocations={adAllocations} categoryTree={categoryTree} />}
     </div>
   );

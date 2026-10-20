@@ -170,6 +170,9 @@ create table public.settings (
   salary_employee2_pct numeric(6,4) not null default 0.07,
   rent_monthly numeric(12,2) not null default 8000.00,
   transportation_per_day numeric(12,2) not null default 32.00,
+  -- Flat monthly marketing-agency fee, charged at amount / 30 per day from
+  -- 2026-10-19 on (before that the fee was 12.5% of ad spend - see daily-pnl.ts).
+  marketing_agency_fee_monthly numeric(12,2) not null default 50000,
   record_data_synced_at timestamptz,
   updated_at timestamptz not null default now()
 );
