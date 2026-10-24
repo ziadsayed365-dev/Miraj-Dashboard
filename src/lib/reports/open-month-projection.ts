@@ -4,7 +4,7 @@ import { fetchAllRows } from "@/lib/fetch-all";
 import { normalizeGovernorate } from "@/lib/governorates";
 import { getProjectionRate, latestMatureMonth, type ProjectionRate } from "@/lib/engine/monthly-rate";
 import { addDays, egyptToday } from "@/lib/dates";
-import { loadBostaFeeBook, type FeeColumn } from "@/lib/bosta-fees";
+import { loadBostaFeeBook, shippedWithBosta, type FeeColumn } from "@/lib/bosta-fees";
 import { isHandedToCourier } from "./actual-mode";
 import type { DailyPnlMode, DailyPnlRow } from "./daily-pnl";
 
@@ -269,7 +269,12 @@ export async function getRateProjectedRows(
       if (!order.bosta_tracking_number || order.self_delivered === true) continue;
       const day = getDay(order.egypt_day);
       const governorate = normalizeGovernorate(order.outcome_governorate) ?? normalizeGovernorate(order.governorate_shopify);
-      const fees = feeBook.feesFor(feeBook.zoneFor(governorate), settings.default_box_size_tier, order.egypt_day);
+      const fees = feeBook.feesFor(
+        feeBook.zoneFor(governorate),
+        settings.default_box_size_tier,
+        order.egypt_day,
+        shippedWithBosta(order.bosta_tracking_number)
+      );
       day.bostaPenalty += fees?.return_to_origin ?? 0;
       day.openPackageFee += feeBook.openPackageFeeTotal(order.egypt_day);
       continue;
@@ -300,11 +305,16 @@ export async function getRateProjectedRows(
 
     const governorate = normalizeGovernorate(order.outcome_governorate) ?? normalizeGovernorate(order.governorate_shopify);
     const zone = feeBook.zoneFor(governorate);
-    const fees = feeBook.feesFor(zone, settings.default_box_size_tier, order.egypt_day);
+    // J&T from 2026-10-24 (migration 0088), unless this parcel still went with
+    // Bosta (a Bosta tracking number, all digits - see shippedWithBosta).
+    const withBosta = shippedWithBosta(order.bosta_tracking_number);
+    const fees = feeBook.feesFor(zone, settings.default_box_size_tier, order.egypt_day, withBosta);
     const openPackageFeeTotal = feeBook.openPackageFeeTotal(order.egypt_day);
 
     const codBasis = order.cod_amount_collected ?? order.total_price ?? 0;
     const codCashFeeTotal = codBasis * feeBook.codCashFeePct(order.egypt_day);
+    // J&T's 1% COD fee above 1,500 EGP, part of its delivery bill (see margin.ts).
+    const courierCodFeeTotal = feeBook.courierCodFee(zone, order.egypt_day, codBasis, withBosta);
 
     const lineItems = order.order_line_items ?? [];
     const totalItemsInOrder = lineItems.reduce((sum, li) => sum + li.quantity, 0);
@@ -317,7 +327,11 @@ export async function getRateProjectedRows(
         failed_rto: "return_to_origin",
       };
       const key = col[outcome];
-      return key ? fees[key] : 0;
+      if (!key) return 0;
+      // J&T's COD fee rides with the delivered leg only (cash collected on
+      // delivery); zero on a Bosta parcel / pre-switch day.
+      const cod = outcome === "delivered" ? courierCodFeeTotal : 0;
+      return fees[key] + cod;
     }
 
     for (const li of lineItems) {

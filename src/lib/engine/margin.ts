@@ -3,7 +3,7 @@ import { supabase } from "@/lib/supabase";
 import { normalizeGovernorate } from "@/lib/governorates";
 import { fetchAllRows } from "@/lib/fetch-all";
 import { daysAgo } from "@/lib/dates";
-import { loadBostaFeeBook, type FeeColumn } from "@/lib/bosta-fees";
+import { loadBostaFeeBook, shippedWithBosta, type FeeColumn } from "@/lib/bosta-fees";
 
 // Only recompute orders on/after this many days ago by default. Older orders are
 // long settled (the courier resolves within days), so their margins never change,
@@ -157,8 +157,11 @@ export async function computeMargins(
         const reachedCourier = Boolean(order.bosta_tracking_number) && order.self_delivered !== true;
         const cancelledGovernorate =
           normalizeGovernorate(order.outcome_governorate) ?? normalizeGovernorate(order.governorate_shopify);
+        // A cancellation that reached the courier is priced on whichever card
+        // carried it - J&T's for a J&T parcel, Bosta's for a Bosta one.
+        const cancelledWithBosta = shippedWithBosta(order.bosta_tracking_number);
         const cancelledFees = reachedCourier
-          ? feeBook.feesFor(feeBook.zoneFor(cancelledGovernorate), settings.default_box_size_tier, order.egypt_day)
+          ? feeBook.feesFor(feeBook.zoneFor(cancelledGovernorate), settings.default_box_size_tier, order.egypt_day, cancelledWithBosta)
           : null;
         const cancelledOpenPackage = reachedCourier ? feeBook.openPackageFeeTotal(order.egypt_day) : 0;
 
@@ -201,7 +204,10 @@ export async function computeMargins(
 
       const governorate = normalizeGovernorate(order.outcome_governorate) ?? normalizeGovernorate(order.governorate_shopify);
       const zone = feeBook.zoneFor(governorate);
-      const fees = feeBook.feesFor(zone, settings.default_box_size_tier, order.egypt_day);
+      // J&T from 2026-10-24 (migration 0088), unless this parcel still went with
+      // Bosta (a Bosta tracking number, all digits - see shippedWithBosta).
+      const withBosta = shippedWithBosta(order.bosta_tracking_number);
+      const fees = feeBook.feesFor(zone, settings.default_box_size_tier, order.egypt_day, withBosta);
 
       // What Bosta actually billed for this shipment, pulled from its own
       // wallet.cashCycle by scripts/pull-bosta-fees.mjs.
@@ -233,6 +239,10 @@ export async function computeMargins(
       const codCashFeeTotal = hasActual
         ? Number(order.bosta_actual_cod_fee ?? 0) * VAT
         : codBasis * feeBook.codCashFeePct(order.egypt_day);
+      // J&T's 1% COD fee above 1,500 EGP. Part of the courier's delivery bill,
+      // so it sits in the delivered fee (Shipping Differences); zero on a Bosta
+      // parcel and on days before the switch.
+      const courierCodFeeTotal = feeBook.courierCodFee(zone, order.egypt_day, codBasis, withBosta);
 
       // The courier's own charge is whatever is left of the invoice once the
       // two lines that get reported separately are taken out - so the three
@@ -282,7 +292,11 @@ export async function computeMargins(
           if (hasActual) return actualCourierFee * unitShare;
           if (!fees) return 0;
           const col = FEE_COLUMN_FOR_OUTCOME[outcome];
-          return col ? fees[col] * unitShare : 0;
+          if (!col) return 0;
+          // J&T's COD fee is owed only when the cash is collected - on delivery,
+          // not on a returned parcel. Zero for Bosta parcels / pre-switch days.
+          const cod = outcome === "delivered" ? courierCodFeeTotal : 0;
+          return (fees[col] + cod) * unitShare;
         }
 
         // "Gross" = before the refund/damage risk haircuts; these haircuts
