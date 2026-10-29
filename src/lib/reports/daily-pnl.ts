@@ -101,6 +101,16 @@ export type DailyPnlRow = {
   // two open days can carry different ones and the Delivery Rate row reads it
   // per column. Null on every day that is not open-month projected.
   projectionRate: { rate: number; sourceMonth: string | null } | null;
+  // The closed-month counterpart of projectionRate: the real delivery rate of
+  // the (mature) month this day sits in - delivered / every order received over
+  // the whole month, the same definition as the Delivery Rate row. A single
+  // day's own ratio is meaningless (its orders have had no time to arrive, yet
+  // all sit in its denominator), so the daily view reads this month figure on
+  // every one of the month's days instead of the single latest-mature rate the
+  // open month projects with. Null on open-month days (they carry projectionRate
+  // instead) and on today. Stamped server-side in computeDailyPnl, where the
+  // whole month is in view.
+  monthDeliveryRate: number | null;
   // Day's share of each owner-added account flagged into the Income Statement,
   // one entry per account, each rendered as its own named line below
   // Contribution Profit (expense subtracts, income adds).
@@ -214,6 +224,7 @@ function emptyRow(date: string): DailyPnlRow {
     bostaPenalty: 0,
     assumedDeliveryRate: null,
     projectionRate: null,
+    monthDeliveryRate: null,
     customLines: [],
   };
 }
@@ -556,6 +567,28 @@ async function computeDailyPnl(from: string, to: string, mode: DailyPnlMode = "p
       .map((l) => ({ ...l, amount: l.amount / dim }));
   }
 
+  // Stamp each CLOSED-month day with its month's own real delivery rate, so the
+  // daily view can show that figure on every one of the month's days instead of
+  // the single latest-mature rate the open month projects with. Measured here,
+  // where the whole month is in view, as delivered / every order received over
+  // the month - the exact definition of the Delivery Rate row. The outcome-less
+  // window has no recorded deliveries, so its assumed rate stands in for the
+  // delivered count, matching how that row and the money below it read. Open
+  // months are skipped: their days carry projectionRate instead.
+  const monthAgg = new Map<string, { delivered: number; received: number }>();
+  for (const row of byDate.values()) {
+    const month = row.date.slice(0, 7);
+    if (!isMonthMature(`${month}-01`)) continue;
+    const agg = monthAgg.get(month) ?? { delivered: 0, received: 0 };
+    agg.delivered += row.assumedDeliveryRate != null ? row.assumedDeliveryRate * row.ordersReceived : row.ordersDelivered;
+    agg.received += row.ordersReceived;
+    monthAgg.set(month, agg);
+  }
+  for (const row of byDate.values()) {
+    const agg = monthAgg.get(row.date.slice(0, 7));
+    if (agg && agg.received > 0) row.monthDeliveryRate = agg.delivered / agg.received;
+  }
+
   // The current (open) day is still accruing across every input - orders keep
   // arriving, ad spend is a partial figure, and the projection can't be trusted
   // that early. Rather than show a misleading half-day, force today to a clean
@@ -653,6 +686,8 @@ export function sumTotals(rows: DailyPnlRow[]): DailyPnlTotals {
     assumedDeliveryRate: null as number | null,
     // Per-day only: a range can span days struck at different rates.
     projectionRate: null,
+    // Per-day only, like projectionRate: a range can span several closed months.
+    monthDeliveryRate: null,
     customLines: [] as CustomPnlLine[],
   };
   // Owner-added P&L accounts, summed per account across the range. Keyed by

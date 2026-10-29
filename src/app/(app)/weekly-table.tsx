@@ -119,6 +119,7 @@ function emptyRow(date: string): DailyPnlRow {
     bostaPenalty: 0,
     assumedDeliveryRate: null,
     projectionRate: null,
+    monthDeliveryRate: null,
     customLines: [],
   };
 }
@@ -202,13 +203,17 @@ export function buildLines(
     r.assumedDeliveryRate != null ? r.assumedDeliveryRate * r.ordersReceived : r.ordersDelivered;
   const totalDelivered = sum(cols.map(effectiveDelivered));
   const expectedPct = opts?.expected?.rate != null ? opts.expected.rate * 100 : null;
-  // An open-month day shows the rate its own money was struck at, which is not
-  // always today's expected rate - each open day keeps the rate it was first
-  // reported at. The label names a source month only when every column agrees.
-  const shownPct = (r: DailyPnlRow) => (r.projectionRate ? r.projectionRate.rate * 100 : expectedPct!);
-  const shownSources = new Set(
-    cols.map((r) => (r.projectionRate ? (r.projectionRate.sourceMonth?.slice(0, 7) ?? null) : (opts?.expected?.month ?? null)))
-  );
+  // Each column shows the delivery rate behind its own figures, not one rate for
+  // the whole window: an open-month day shows the rate its money was struck at
+  // (it keeps the rate it was first reported at); a closed-month day shows its
+  // own month's real rate; only a day with neither falls back to the latest
+  // mature month's expected rate. The label names a source month only when every
+  // column agrees on one.
+  const shownPct = (r: DailyPnlRow) =>
+    r.projectionRate ? r.projectionRate.rate * 100 : r.monthDeliveryRate != null ? r.monthDeliveryRate * 100 : expectedPct!;
+  const sourceOf = (r: DailyPnlRow) =>
+    r.projectionRate ? (r.projectionRate.sourceMonth?.slice(0, 7) ?? null) : r.monthDeliveryRate != null ? r.date.slice(0, 7) : (opts?.expected?.month ?? null);
+  const shownSources = new Set(cols.map(sourceOf));
   const labelMonth = shownSources.size === 1 ? [...shownSources][0] : null;
   const deliveryRateLine: Line =
     expectedPct !== null
@@ -446,11 +451,13 @@ export function buildLines(
     const openPackageFee = cols.map((r) => (isOpen(r) ? 0 : r.openPackageFee));
     // Daily "Real" basis = expected delivered = all orders x expected delivery
     // rate (a single day is still in transit, so actual delivered is misleading).
-    // An open day uses the rate its own money was struck at. Orders are the
+    // An open day uses the rate its own money was struck at; a closed-month day
+    // uses its own month's real rate, matching the Delivery Rate row above it so
+    // the ratios and that row can never tell different stories. Orders are the
     // received count, not placed: the rate's denominator already holds the
     // cancellations, so scaling the cancellation-free count by it would drop
     // them twice.
-    const rateOf = (r: DailyPnlRow) => r.projectionRate?.rate ?? opts.rate ?? 1;
+    const rateOf = (r: DailyPnlRow) => r.projectionRate?.rate ?? r.monthDeliveryRate ?? opts.rate ?? 1;
     const realRev = cols.map((r) => r.grossRevenue * rateOf(r));
     const realCogs = cols.map((r) => r.grossCogs * rateOf(r));
     const realOrders = cols.map((r) => r.ordersReceived * rateOf(r));

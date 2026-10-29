@@ -70,6 +70,8 @@ function emptyMonth(month: string): DailyPnlRow {
     assumedDeliveryRate: null,
     // Never set on a month: its days can carry different projection rates.
     projectionRate: null,
+    // Per-day closed-month figure; the monthly view shows real per-month rates.
+    monthDeliveryRate: null,
     customLines: [],
   };
 }

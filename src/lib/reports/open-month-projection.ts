@@ -86,6 +86,8 @@ function emptyRow(date: string): DailyPnlRow {
     assumedDeliveryRate: null,
     // Stamped by getOpenMonthRows, which knows the rate each day was struck at.
     projectionRate: null,
+    // Closed-month figure only; never set on a projected (open or outcome-less) day.
+    monthDeliveryRate: null,
     customLines: [],
   };
 }
